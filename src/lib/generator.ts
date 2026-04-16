@@ -1,9 +1,12 @@
 /**
  * 文章生成器：调用 DeepSeek API，基于 RAG 上下文生成风格化文章
  * 支持流式输出，服务端可以实时将 token 推送给浏览器
+ *
+ * System Prompt 从 data/style.md 动态加载，不再硬编码
  */
 
 import OpenAI from 'openai';
+import { loadStyle } from './styleAnalyzer.js';
 
 const client = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
@@ -11,37 +14,39 @@ const client = new OpenAI({
   timeout: 60_000,
 });
 
-const SYSTEM_PROMPT = `你是一名有独立视角的内容创作者，专注于游戏、动漫、亚文化领域的深度评论。你深受某位作者的影响，继承了他的行文基因，但你有自己的表达。
+const DEFAULT_SYSTEM_PROMPT = `你是一名内容创作者。请根据用户提供的参考片段，学习其中的写作风格（语感、节奏、用词习惯），然后以类似的风格写一篇新文章。
 
-【你从这位作者身上继承的基因——不是模板，是本能】
+注意：
+- 只学习风格，不要复制具体内容、素材或例子
+- 每篇文章的结构要有变化，不要套模板
+- 禁止"总的来说""不得不说""值得一提"等套话`;
 
-语感：
-- 长短句交替是呼吸节奏，不是修辞技巧。吐槽用短句连击，抒情用长句铺陈，两者可以在同一段里切换
-- 混用ACG术语、互联网梗与文学化隐喻，像深夜酒馆里的老资深玩家在说话
-- 频繁使用第一人称，分享真实的个人经历和审美偏好
+let _cachedPrompt: string | null = null;
 
-论证：
-- 不引用数据，偏好跨界类比——把讨论对象与文学、电影、历史做互文
-- 先给判断再回溯依据，对被时代忽视的创作者保持人文关怀
+/** 获取 system prompt（优先从 data/style.md 读取，否则使用默认值） */
+async function getSystemPrompt(): Promise<string> {
+  if (_cachedPrompt) return _cachedPrompt;
 
-禁区：
-- 禁止"总的来说""不得不说""值得一提"等套话
-- 禁止"首先/其次/最后"式列举
-- 禁止每段长度相似，要有明显的节奏起伏
+  const style = await loadStyle();
+  if (style) {
+    _cachedPrompt = `你是一名深受某位作者影响的内容创作者，继承了他的行文基因，但有自己的独立表达。
 
-【关于文章结构——你必须打破固定套路】
+以下是从该作者文章中提炼出的风格指南，请严格遵循：
 
-每篇文章的结构应该由主题本身决定，而不是套模板。以下是一些可能的开头方式（每次只选一种，且优先发明你自己的方式）：
-- 从一个荒诞的细节或个人记忆切入
-- 从一个反直觉的结论开始，然后解释为什么
-- 从两个看似无关的事物的碰撞开始
-- 从对读者的一个提问开始
-- 直接扔出一个场景描写
+${style}`;
+    console.log('📄 已加载 data/style.md 作为写作风格');
+  } else {
+    _cachedPrompt = DEFAULT_SYSTEM_PROMPT;
+    console.log('⚠ data/style.md 不存在，使用默认风格。运行 pnpm ingest 可自动生成。');
+  }
 
-中间展开和结尾同理——不要每次都"上升到人类情感/时代变迁"收尾。可以戛然而止、可以用一个画面定格、可以用一句自嘲、可以开放式留白。结构本身要让人觉得"这篇和上一篇不一样"。
+  return _cachedPrompt;
+}
 
-【标题】
-- 包含强情绪或冲突感，有争议性但不无聊`;
+/** 清除缓存的 prompt（当 style.md 更新后调用） */
+export function clearStyleCache(): void {
+  _cachedPrompt = null;
+}
 
 /** 从参考片段中构建风格引导提示词（只学语感，不借内容） */
 function buildReferencePrompt(chunks: string[]): string {
@@ -66,6 +71,8 @@ ${chunks.map((c, i) => `〔片段${i + 1}〕\n${c}`).join('\n\n')}
 export interface GenerateParams {
   topic: string;
   extraNote?: string;
+  events?: string;
+  context?: string;
   chunks: string[];
   onToken: (token: string) => void;
   signal?: AbortSignal;
@@ -75,17 +82,27 @@ export interface GenerateParams {
 export async function generateArticle({
   topic,
   extraNote = '',
+  events = '',
+  context = '',
   chunks,
   onToken,
   signal,
 }: GenerateParams): Promise<string> {
+  const systemPrompt = await getSystemPrompt();
   const referenceBlock = buildReferencePrompt(chunks);
-  const userMessage = `写一篇关于「${topic}」的文章。${extraNote ? `\n额外要求：${extraNote}` : ''}${referenceBlock}`;
+
+  const parts = [`写一篇关于「${topic}」的文章。`];
+  if (events) parts.push(`\n可以引用或切入的现实/历史事件：${events}`);
+  if (context) parts.push(`\n背景补充：${context}`);
+  if (extraNote) parts.push(`\n额外要求：${extraNote}`);
+  parts.push(referenceBlock);
+
+  const userMessage = parts.join('');
 
   const stream = await client.chat.completions.create({
     model: 'deepseek-chat',
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ],
     stream: true,

@@ -73,3 +73,19 @@ export async function count(): Promise<number> {
   _cachedCount = stats.length;
   return _cachedCount;
 }
+
+/** 从索引中随机抽取 n 个片段（用于纯风格示范） */
+export async function randomSample(n: number): Promise<QueryResult[]> {
+  const index = await getIndex();
+  const allItems = await index.listItems();
+  if (allItems.length === 0) return [];
+
+  // Fisher-Yates 洗牌取前 n 个
+  const shuffled = [...allItems].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, Math.min(n, allItems.length));
+
+  return selected.map((item) => ({
+    score: 0,
+    metadata: item.metadata as ChunkMetadata,
+  }));
+}

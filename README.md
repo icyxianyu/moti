@@ -8,6 +8,8 @@
 - 本地 Embedding（Ollama nomic-embed-text），无需云端 embedding 服务
 - DeepSeek API 流式生成，实时输出
 - 增量摄入：已索引的文章自动跳过
+- **自动风格分析**：摄入文章后自动总结写作风格，支持手动编辑微调
+- **混合检索**：3 个主题相关片段（领域上下文）+ 2 个随机片段（风格示范），减少抄内容
 - 前端支持取消生成、折叠查看参考片段
 - 请求频率限制 + 输入长度限制
 
@@ -49,10 +51,20 @@ cp .env.example .env
 
 ```bash
 pnpm ingest           # 增量摄入（跳过已索引文章）
-pnpm ingest:force     # 强制重建全部索引
+pnpm ingest:force     # 强制重建全部索引 + 重新分析风格
 ```
 
-### 6. 启动服务
+摄入完成后会自动分析写作风格，生成 `data/style.md`。
+
+### 6. 自定义风格（可选）
+
+摄入会自动生成 `data/style.md`，你可以直接编辑它来微调风格描述。
+
+- **不编辑**：使用自动生成的风格，开箱即用
+- **手动编辑**：微调后不会被覆盖（除非用 `--force`）
+- **换作者**：删掉 `data/style.md` 和 `data/index/`，放入新文章，重新 `pnpm ingest`
+
+### 7. 启动服务
 
 ```bash
 pnpm dev              # 开发模式（热重载）
@@ -68,7 +80,7 @@ pnpm dev              # 开发模式（热重载）
 | `pnpm start` | 生产模式启动（需先 build） |
 | `pnpm build` | 编译 TypeScript 到 dist/ |
 | `pnpm ingest` | 增量摄入文章到向量索引 |
-| `pnpm ingest:force` | 强制重建全部索引 |
+| `pnpm ingest:force` | 强制重建全部索引 + 重新分析风格 |
 
 ## 项目结构
 
@@ -78,13 +90,15 @@ pnpm dev              # 开发模式（热重载）
 │   ├── ingest.ts           # 数据摄入脚本
 │   └── lib/
 │       ├── embedder.ts     # Ollama 嵌入服务（带超时和重试）
-│       ├── generator.ts    # DeepSeek 生成服务（带 AbortSignal）
-│       └── vectorStore.ts  # vectra 本地向量存储
+│       ├── generator.ts      # DeepSeek 生成服务（带 AbortSignal）
+│       ├── styleAnalyzer.ts  # 风格自动分析与加载
+│       └── vectorStore.ts    # vectra 本地向量存储
 ├── public/
-│   └── index.html          # 前端页面（暗色主题）
+│   └── index.html            # 前端页面（暗色主题）
 ├── data/
-│   ├── articles/           # 放入 .txt 文章（用户目录）
-│   └── index/              # 向量索引（自动生成）
+│   ├── articles/             # 放入 .txt 文章（用户目录）
+│   ├── style.md              # 写作风格描述（自动生成，可手动编辑）
+│   └── index/                # 向量索引（自动生成）
 ├── .env.example            # 环境变量模板
 ├── tsconfig.json
 └── package.json

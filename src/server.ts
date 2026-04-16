@@ -18,13 +18,15 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { embed } from './lib/embedder.js';
-import { query, count } from './lib/vectorStore.js';
+import { query, count, randomSample } from './lib/vectorStore.js';
 import { generateArticle } from './lib/generator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT ?? 8000;
 const MAX_TOPIC_LENGTH = 200;
 const MAX_EXTRA_LENGTH = 500;
+const MAX_EVENTS_LENGTH = 500;
+const MAX_CONTEXT_LENGTH = 500;
 
 const app = express();
 app.use(express.json({ limit: '10kb' }));
@@ -58,7 +60,7 @@ app.get('/api/status', async (_req: Request, res: Response) => {
 
 // ── 生成文章（SSE 流式响应）──────────────────────────────────────────────────
 app.post('/api/generate', generateLimiter, async (req: Request, res: Response) => {
-  const { topic, extraNote } = req.body ?? {};
+  const { topic, extraNote, events, context } = req.body ?? {};
 
   // 输入校验
   if (!topic || typeof topic !== 'string' || !topic.trim()) {
@@ -71,6 +73,14 @@ app.post('/api/generate', generateLimiter, async (req: Request, res: Response) =
   }
   if (extraNote && typeof extraNote === 'string' && extraNote.length > MAX_EXTRA_LENGTH) {
     res.status(400).json({ error: `额外要求长度不能超过 ${MAX_EXTRA_LENGTH} 个字符` });
+    return;
+  }
+  if (events && typeof events === 'string' && events.length > MAX_EVENTS_LENGTH) {
+    res.status(400).json({ error: `事件素材长度不能超过 ${MAX_EVENTS_LENGTH} 个字符` });
+    return;
+  }
+  if (context && typeof context === 'string' && context.length > MAX_CONTEXT_LENGTH) {
+    res.status(400).json({ error: `背景补充长度不能超过 ${MAX_CONTEXT_LENGTH} 个字符` });
     return;
   }
   if (!process.env.DEEPSEEK_API_KEY) {
@@ -96,23 +106,37 @@ app.post('/api/generate', generateLimiter, async (req: Request, res: Response) =
     send('status', { message: '正在检索相关段落…' });
     const queryVec = await embed(topic);
 
-    // 2. 检索 top-5 相关片段
-    const hits = await query(queryVec, 5);
-    const chunks = hits.map((h) => h.metadata.text);
+    // 2. 混合检索：3 个主题相关 + 2 个随机风格示范
+    const topicHits = await query(queryVec, 3);
+    const styleHits = await randomSample(2);
+
+    // 去重（随机抽取的可能和主题检索重复）
+    const seenIds = new Set(topicHits.map((h) => h.metadata.id));
+    const dedupedStyleHits = styleHits.filter((h) => !seenIds.has(h.metadata.id));
+
+    const allHits = [
+      ...topicHits.map((h) => ({ ...h, type: '主题相关' as const })),
+      ...dedupedStyleHits.map((h) => ({ ...h, type: '风格示范' as const })),
+    ];
+
+    const chunks = allHits.map((h) => h.metadata.text);
     send('retrieval', {
-      items: hits.map((h, i) => ({
+      items: allHits.map((h, i) => ({
         index: i + 1,
         text: h.metadata.text,
         score: h.score,
         source: h.metadata.source ?? null,
+        type: h.type,
       })),
     });
-    send('status', { message: `检索到 ${chunks.length} 个参考片段，开始生成…` });
+    send('status', { message: `检索到 ${allHits.length} 个参考片段（${topicHits.length} 主题相关 + ${dedupedStyleHits.length} 风格示范），开始生成…` });
 
     // 3. 流式生成
     await generateArticle({
       topic: topic.trim(),
       extraNote: (extraNote as string) ?? '',
+      events: (events as string) ?? '',
+      context: (context as string) ?? '',
       chunks,
       onToken: (token) => send('token', { token }),
       signal: abortController.signal,

@@ -18,6 +18,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { embed } from './lib/embedder.js';
 import { upsert, count, exists } from './lib/vectorStore.js';
+import { analyzeAndSaveStyle } from './lib/styleAnalyzer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ARTICLES_DIR = path.resolve(__dirname, '../data/articles');
@@ -122,6 +123,12 @@ async function main(): Promise<void> {
   console.log(`  新增: ${addedChunks} 个片段`);
   console.log(`  跳过: ${skippedChunks} 个片段（${skippedFiles} 个文件已索引）`);
   console.log(`  索引总数: ${total}`);
+
+  // ── 风格分析：自动从文章中总结写作风格 ──────────────────────────────────
+  if (addedChunks > 0 || FORCE) {
+    console.log('');
+    await analyzeAndSaveStyle(ARTICLES_DIR, FORCE);
+  }
 }
 
 main().catch((err: unknown) => {
