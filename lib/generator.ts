@@ -1,18 +1,4 @@
-/**
- * 文章生成器：调用 DeepSeek API，基于 RAG 上下文生成风格化文章
- * 支持流式输出，服务端可以实时将 token 推送给浏览器
- *
- * System Prompt 从 data/style.md 动态加载，不再硬编码
- */
-
-import OpenAI from 'openai';
-import { loadStyle } from './styleAnalyzer.js';
-
-const client = new OpenAI({
-  apiKey: process.env.DEEPSEEK_API_KEY,
-  baseURL: 'https://api.deepseek.com',
-  timeout: 60_000,
-});
+import OpenAI from "openai";
 
 const DEFAULT_SYSTEM_PROMPT = `你是一名内容创作者。请根据用户提供的参考片段，学习其中的写作风格（语感、节奏、用词习惯），然后以类似的风格写一篇新文章。
 
@@ -21,36 +7,19 @@ const DEFAULT_SYSTEM_PROMPT = `你是一名内容创作者。请根据用户提�
 - 每篇文章的结构要有变化，不要套模板
 - 禁止"总的来说""不得不说""值得一提"等套话`;
 
-let _cachedPrompt: string | null = null;
-
-/** 获取 system prompt（优先从 data/style.md 读取，否则使用默认值） */
-async function getSystemPrompt(): Promise<string> {
-  if (_cachedPrompt) return _cachedPrompt;
-
-  const style = await loadStyle();
-  if (style) {
-    _cachedPrompt = `你是一名深受某位作者影响的内容创作者，继承了他的行文基因，但有自己的独立表达。
+function buildSystemPrompt(styleMd: string | null): string {
+  if (styleMd) {
+    return `你是一名深受某位作者影响的内容创作者，继承了他的行文基因，但有自己的独立表达。
 
 以下是从该作者文章中提炼出的风格指南，请严格遵循：
 
-${style}`;
-    console.log('📄 已加载 data/style.md 作为写作风格');
-  } else {
-    _cachedPrompt = DEFAULT_SYSTEM_PROMPT;
-    console.log('⚠ data/style.md 不存在，使用默认风格。运行 pnpm ingest 可自动生成。');
+${styleMd}`;
   }
-
-  return _cachedPrompt;
+  return DEFAULT_SYSTEM_PROMPT;
 }
 
-/** 清除缓存的 prompt（当 style.md 更新后调用） */
-export function clearStyleCache(): void {
-  _cachedPrompt = null;
-}
-
-/** 从参考片段中构建风格引导提示词（只学语感，不借内容） */
 function buildReferencePrompt(chunks: string[]): string {
-  if (chunks.length === 0) return '';
+  if (chunks.length === 0) return "";
 
   return `
 
@@ -63,7 +32,7 @@ function buildReferencePrompt(chunks: string[]): string {
 4. 你要写的文章必须有完全不同的素材、不同的例子、不同的论证路径
 5. 如果你发现自己在写和参考片段类似的句子，立刻换一种说法
 
-${chunks.map((c, i) => `〔片段${i + 1}〕\n${c}`).join('\n\n')}
+${chunks.map((c, i) => `〔片段${i + 1}〕\n${c}`).join("\n\n")}
 
 ─── 参考结束。以下是你的写作任务，从这里开始你必须完全原创 ───`;
 }
@@ -74,21 +43,28 @@ export interface GenerateParams {
   events?: string;
   context?: string;
   chunks: string[];
+  styleMd: string | null;
   onToken: (token: string) => void;
   signal?: AbortSignal;
 }
 
-/** 流式生成文章，通过 onToken 回调逐 token 返回 */
 export async function generateArticle({
   topic,
-  extraNote = '',
-  events = '',
-  context = '',
+  extraNote = "",
+  events = "",
+  context = "",
   chunks,
+  styleMd,
   onToken,
   signal,
 }: GenerateParams): Promise<string> {
-  const systemPrompt = await getSystemPrompt();
+  const client = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: "https://api.deepseek.com",
+    timeout: 60_000,
+  });
+
+  const systemPrompt = buildSystemPrompt(styleMd);
   const referenceBlock = buildReferencePrompt(chunks);
 
   const parts = [`写一篇关于「${topic}」的文章。`];
@@ -97,13 +73,13 @@ export async function generateArticle({
   if (extraNote) parts.push(`\n额外要求：${extraNote}`);
   parts.push(referenceBlock);
 
-  const userMessage = parts.join('');
+  const userMessage = parts.join("");
 
   const stream = await client.chat.completions.create({
-    model: 'deepseek-chat',
+    model: "deepseek-chat",
     messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
     ],
     stream: true,
     max_tokens: 3000,
@@ -112,13 +88,13 @@ export async function generateArticle({
     presence_penalty: 0.4,
   });
 
-  let fullText = '';
+  let fullText = "";
   for await (const chunk of stream) {
     if (signal?.aborted) {
       stream.controller.abort();
       break;
     }
-    const token = chunk.choices[0]?.delta?.content ?? '';
+    const token = chunk.choices[0]?.delta?.content ?? "";
     if (token) {
       fullText += token;
       onToken(token);

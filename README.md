@@ -1,17 +1,24 @@
 # RAG Writer
 
-基于 RAG（检索增强生成）的风格写作工具，从已有文章中学习写作风格，生成模仿风格的新文章。
+基于 **Next.js + SQLite + Vectra + Ollama + DeepSeek** 的多作者风格写作工具。你可以为不同作者上传 `.txt` 语料，分析其写作风格，并基于检索增强生成（RAG）创作新文章。
 
 ## 功能特性
 
-- 本地向量索引（vectra），无需外部向量数据库
-- 本地 Embedding（Ollama nomic-embed-text），无需云端 embedding 服务
-- DeepSeek API 流式生成，实时输出
-- 增量摄入：已索引的文章自动跳过
-- **自动风格分析**：摄入文章后自动总结写作风格，支持手动编辑微调
-- **混合检索**：3 个主题相关片段（领域上下文）+ 2 个随机片段（风格示范），减少抄内容
-- 前端支持取消生成、折叠查看参考片段
-- 请求频率限制 + 输入长度限制
+- **多作者管理**：为不同作者分别维护语料、风格和生成历史
+- **本地向量索引**：使用 `vectra` 存储每位作者的检索索引，无需外部向量数据库
+- **本地 Embedding**：通过 Ollama 的 `nomic-embed-text` 生成向量
+- **DeepSeek 生成**：使用 DeepSeek 进行风格分析与文章生成
+- **服务端风格状态**：风格分析状态持久化为 `idle / analyzing / done / failed`，切页或刷新后不会丢失
+- **可编辑风格面板**：在创作页顶部直接查看、展开和编辑当前作者的风格指南
+- **生成历史查看**：保留每次生成结果，支持回看历史内容
+
+## 技术栈
+
+- **前端**：Next.js 15、React 19、Tailwind CSS、Radix UI
+- **数据库**：SQLite（`better-sqlite3`）
+- **向量检索**：Vectra
+- **Embedding**：Ollama（`nomic-embed-text`）
+- **LLM**：DeepSeek API
 
 ## 快速开始
 
@@ -24,9 +31,10 @@ pnpm install
 ### 2. 安装 Ollama 并拉取模型
 
 ```bash
-# 安装 Ollama: https://ollama.com
 ollama pull nomic-embed-text
 ```
+
+默认会连接到 `http://localhost:11434`。
 
 ### 3. 配置环境变量
 
@@ -34,81 +42,79 @@ ollama pull nomic-embed-text
 cp .env.example .env
 ```
 
-编辑 `.env`，填入 DeepSeek API Key：
+编辑 `.env`：
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | **是** | DeepSeek API 密钥 |
 | `OLLAMA_BASE_URL` | 否 | Ollama 地址，默认 `http://localhost:11434` |
-| `PORT` | 否 | 服务端口，默认 `8000` |
-| `ARTICLES_DIR` | 否 | 文章目录，默认 `data/articles/` |
 
-### 4. 放入文章
-
-将 `.txt` 格式的文章文件放入 `data/articles/` 目录。
-
-### 5. 摄入索引
+### 4. 启动开发环境
 
 ```bash
-pnpm ingest           # 增量摄入（跳过已索引文章）
-pnpm ingest:force     # 强制重建全部索引 + 重新分析风格
+pnpm dev
 ```
 
-摄入完成后会自动分析写作风格，生成 `data/style.md`。
+启动后访问 `http://localhost:3000`。
 
-### 6. 自定义风格（可选）
+### 5. 使用流程
 
-摄入会自动生成 `data/style.md`，你可以直接编辑它来微调风格描述。
+- **创建作者**：在顶部作者切换器中新增作者
+- **上传语料**：在“文本集”页签上传一个或多个 `.txt` 文件
+- **分析风格**：在“创作”页签顶部点击“分析风格”或“重新分析”
+- **生成文章**：填写主题、背景等信息后生成文章
+- **查看历史**：在“历史”页签查看过往生成记录
 
-- **不编辑**：使用自动生成的风格，开箱即用
-- **手动编辑**：微调后不会被覆盖（除非用 `--force`）
-- **换作者**：删掉 `data/style.md` 和 `data/index/`，放入新文章，重新 `pnpm ingest`
+## 数据存储说明
 
-### 7. 启动服务
+项目运行时会在 `data/` 目录下生成本地数据：
 
-```bash
-pnpm dev              # 开发模式（热重载）
-```
+- **`data/db.sqlite`**：主数据库
+  - `authors`：作者信息、风格文本、风格状态、分析完成时间
+  - `collections`：上传的原始文本及分片数量
+  - `generations`：生成历史
+- **`data/authors/<authorId>/index/`**：该作者的 Vectra 向量索引
 
-打开 `http://localhost:8000` 即可使用。
+### 风格数据当前如何保存
 
-## 命令说明
+当前版本 **不再使用** `data/style.md` 作为正式数据源。
+
+风格分析结果现在保存在数据库 `authors` 表中：
+
+- **`style_md`**：风格指南正文
+- **`style_status`**：分析状态（`idle` / `analyzing` / `done` / `failed`）
+- **`style_analyzed_at`**：最近一次分析完成时间
+
+这意味着即使刷新页面、切换作者或离开后再回来，前端也能从服务端恢复准确的分析状态。
+
+## 常用命令
 
 | 命令 | 作用 |
 | --- | --- |
-| `pnpm dev` | 开发模式启动（tsx watch 热重载） |
-| `pnpm start` | 生产模式启动（需先 build） |
-| `pnpm build` | 编译 TypeScript 到 dist/ |
-| `pnpm ingest` | 增量摄入文章到向量索引 |
-| `pnpm ingest:force` | 强制重建全部索引 + 重新分析风格 |
+| `pnpm dev` | 开发模式启动 |
+| `pnpm build` | 构建生产版本 |
+| `pnpm start` | 启动生产服务 |
 
 ## 项目结构
 
-```
-├── src/
-│   ├── server.ts           # Express 服务器（SSE 流式响应）
-│   ├── ingest.ts           # 数据摄入脚本
-│   └── lib/
-│       ├── embedder.ts     # Ollama 嵌入服务（带超时和重试）
-│       ├── generator.ts      # DeepSeek 生成服务（带 AbortSignal）
-│       ├── styleAnalyzer.ts  # 风格自动分析与加载
-│       └── vectorStore.ts    # vectra 本地向量存储
-├── public/
-│   └── index.html            # 前端页面（暗色主题）
-├── data/
-│   ├── articles/             # 放入 .txt 文章（用户目录）
-│   ├── style.md              # 写作风格描述（自动生成，可手动编辑）
-│   └── index/                # 向量索引（自动生成）
-├── .env.example            # 环境变量模板
-├── tsconfig.json
-└── package.json
+```text
+.
+├── app/                     # Next.js App Router 页面与 API
+├── components/              # 前端组件
+├── hooks/                   # 前端 hooks
+├── lib/                     # 数据库、向量检索、生成器等核心逻辑
+├── data/                    # 本地运行数据（已 gitignore）
+├── Dockerfile
+├── docker-compose.yml
+└── DEPLOY.md                # Docker 部署说明
 ```
 
-## 注意事项
+## 运行与部署注意事项
 
-- 使用前请确保 Ollama 已启动并拉取了 `nomic-embed-text` 模型
-- `.env` 包含 API 密钥，已在 `.gitignore` 中排除
-- `data/articles/` 和 `data/index/` 均已 gitignore
+- 启动前请确保 Ollama 正常运行，并已拉取 `nomic-embed-text`
+- `.env` 不应提交到仓库
+- `data/` 下的数据库、向量索引、上传语料都属于运行数据，不建议提交到 Git
+- Docker 部署请参考 `DEPLOY.md`
 
 ## License
 
