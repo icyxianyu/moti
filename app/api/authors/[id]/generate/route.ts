@@ -3,6 +3,7 @@ import { getAuthor, createGeneration } from "@/lib/db";
 import { embed } from "@/lib/embedder";
 import { query, randomSample } from "@/lib/vector-store";
 import { generateArticle } from "@/lib/generator";
+import { generateLimiter } from "@/lib/task-limiter";
 import { genId, nowISO } from "@/lib/utils";
 
 interface Ctx {
@@ -36,7 +37,17 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     });
   }
 
+  // 生成任务通常会持续占用检索、模型请求和流式输出资源，因此先抢占一个并发槽位。
+  const release = generateLimiter.tryAcquire();
+  if (!release) {
+    return new Response(JSON.stringify({ error: "当前生成任务较多，请稍后再试" }), {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const encoder = new TextEncoder();
+  // 客户端如果提前断开，这里会把取消信号一路传到下游生成流程，避免后台继续白跑。
   const abortController = new AbortController();
 
   const stream = new ReadableStream({
@@ -49,6 +60,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         send("status", { message: "正在检索相关段落…" });
         const queryVec = await embed(topic);
 
+        // 一部分片段按主题召回，另一部分随机采样作为“风格示范”，两者组合后交给生成模型。
         const topicHits = await query(id, queryVec, 3);
         const styleHits = await randomSample(id, 2);
 
@@ -103,6 +115,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           send("error", { message: (err as Error).message });
         }
       } finally {
+        // 无论成功、失败还是客户端取消，都要释放并发槽位，避免额度泄漏。
+        release();
         controller.close();
       }
     },

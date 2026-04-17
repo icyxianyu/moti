@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listAuthors, createAuthor } from "@/lib/db";
+import { ensureQueueWorkersStarted } from "@/lib/job-queue";
 import { genId, nowISO } from "@/lib/utils";
 
 export async function GET() {
+  ensureQueueWorkersStarted();
+
   const authors = listAuthors();
   return NextResponse.json(authors);
 }

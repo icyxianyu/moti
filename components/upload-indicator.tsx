@@ -12,7 +12,7 @@ export function UploadIndicator({ uploadManager }: Props) {
 
   if (uploadTasks.length === 0) return null;
 
-  const errorCount = uploadTasks.filter((t) => t.status === "error").length;
+  const errorCount = uploadTasks.filter((task) => task.status === "error").length;
   const allDone = !uploading && doneCount === totalCount && errorCount === 0;
 
   return (
@@ -21,14 +21,14 @@ export function UploadIndicator({ uploadManager }: Props) {
         <>
           <Loader2 className="h-3.5 w-3.5 animate-spin text-[#C8A96E]" />
           <span className="text-[#C8A96E]">
-            上传中 {doneCount}/{totalCount}
+            建索引队列处理中 {doneCount}/{totalCount}
           </span>
         </>
       ) : allDone ? (
         <>
           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
           <span className="text-emerald-500">
-            全部上传完成（{totalCount} 个文件）
+            全部入库完成（{totalCount} 个文件）
           </span>
         </>
       ) : errorCount > 0 ? (

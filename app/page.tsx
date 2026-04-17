@@ -29,7 +29,6 @@ export default function Home() {
   const [rightState, setRightState] = useState<RightPanelState>({ mode: "idle" });
   const [activeTab, setActiveTab] = useState("compose");
 
-  // 上传完成后刷新状态
   const handleUploadAllDone = useCallback((_authorId: string) => {
     refreshStatus();
   }, [refreshStatus]);
@@ -41,7 +40,7 @@ export default function Home() {
   }, []);
 
   const handleGenerateDone = useCallback(() => {
-    setRightState((s) => (s.mode === "generating" ? { mode: "idle" } : s));
+    setRightState((state) => (state.mode === "generating" ? { mode: "idle" } : state));
   }, []);
 
   const handleViewHistory = useCallback(
@@ -57,9 +56,46 @@ export default function Home() {
     []
   );
 
+  const styleBadge = (() => {
+    if (!currentAuthor) return null;
+
+    if (currentAuthor.style_status === "queued") {
+      return (
+        <div className="flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 border border-amber-500/20">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+          <span className="text-amber-400">风格排队中</span>
+        </div>
+      );
+    }
+
+    if (currentAuthor.style_status === "analyzing") {
+      return (
+        <div className="flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2.5 py-1 border border-blue-500/20">
+          <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+          <span className="text-blue-400">风格分析中</span>
+        </div>
+      );
+    }
+
+    if (currentAuthor.style_md) {
+      return (
+        <div className="flex items-center gap-1.5 rounded-full bg-[#C8A96E]/10 px-2.5 py-1 border border-[#C8A96E]/20">
+          <span className="h-1.5 w-1.5 rounded-full bg-[#C8A96E]" />
+          <span className="text-[#C8A96E]">已风格化</span>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-1.5 rounded-full bg-[#2A2A2E]/50 px-2.5 py-1 border border-[#2A2A2E]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#52525B]" />
+        <span className="text-[#52525B]">未风格化</span>
+      </div>
+    );
+  })();
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
-      {/* Top Bar */}
       <header className="flex h-14 flex-shrink-0 items-center border-b border-[#2A2A2E] bg-[#141416] px-5">
         <h1 className="font-serif text-lg font-bold tracking-wide text-[#C8A96E]">
           风格写作
@@ -73,25 +109,12 @@ export default function Home() {
         />
         <div className="flex-1" />
 
-        {/* 全局上传进度指示器 */}
         <UploadIndicator uploadManager={uploadManager} />
 
         {currentAuthor && (
           <div className="flex items-center gap-3 text-xs text-[#71717A]">
-            {/* 风格化状态标识 */}
-            {currentAuthor.style_md ? (
-              <div className="flex items-center gap-1.5 rounded-full bg-[#C8A96E]/10 px-2.5 py-1 border border-[#C8A96E]/20">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#C8A96E]" />
-                <span className="text-[#C8A96E]">已风格化</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 rounded-full bg-[#2A2A2E]/50 px-2.5 py-1 border border-[#2A2A2E]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#52525B]" />
-                <span className="text-[#52525B]">未风格化</span>
-              </div>
-            )}
+            {styleBadge}
 
-            {/* 片段数量 */}
             <div className="flex items-center gap-1.5">
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
@@ -104,7 +127,6 @@ export default function Home() {
         )}
       </header>
 
-      {/* Main Content */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <LeftPanel
           currentAuthor={currentAuthor}

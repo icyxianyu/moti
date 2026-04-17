@@ -18,6 +18,7 @@ export interface QueryResult {
 }
 
 const indexCache = new Map<string, LocalIndex>();
+const metadataCache = new Map<string, ChunkMetadata[]>();
 
 function getIndexDir(authorId: string): string {
   return path.join(AUTHORS_DATA_DIR, authorId, "index");
@@ -39,6 +40,17 @@ async function getAuthorIndex(authorId: string): Promise<LocalIndex> {
   return index;
 }
 
+async function getCachedMetadata(authorId: string): Promise<ChunkMetadata[]> {
+  const cached = metadataCache.get(authorId);
+  if (cached) return cached;
+
+  const index = await getAuthorIndex(authorId);
+  const items = await index.listItems();
+  const metadata = items.map((item) => item.metadata as ChunkMetadata);
+  metadataCache.set(authorId, metadata);
+  return metadata;
+}
+
 export async function exists(authorId: string, id: string): Promise<boolean> {
   const index = await getAuthorIndex(authorId);
   const item = await index.getItem(id);
@@ -54,6 +66,12 @@ export async function upsert(
   const existing = await index.getItem(metadata.id);
   if (existing) return false;
   await index.insertItem({ id: metadata.id, vector, metadata });
+
+  const cached = metadataCache.get(authorId);
+  if (cached) {
+    cached.push(metadata);
+  }
+
   return true;
 }
 
@@ -80,16 +98,15 @@ export async function randomSample(
   authorId: string,
   n: number
 ): Promise<QueryResult[]> {
-  const index = await getAuthorIndex(authorId);
-  const allItems = await index.listItems();
-  if (allItems.length === 0) return [];
+  const allMetadata = await getCachedMetadata(authorId);
+  if (allMetadata.length === 0) return [];
 
-  const shuffled = [...allItems].sort(() => Math.random() - 0.5);
-  const selected = shuffled.slice(0, Math.min(n, allItems.length));
+  const shuffled = [...allMetadata].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, Math.min(n, allMetadata.length));
 
-  return selected.map((item) => ({
+  return selected.map((metadata) => ({
     score: 0,
-    metadata: item.metadata as ChunkMetadata,
+    metadata,
   }));
 }
 
@@ -108,11 +125,20 @@ export async function deleteByPrefix(
     }
   }
 
+  const cached = metadataCache.get(authorId);
+  if (cached) {
+    metadataCache.set(
+      authorId,
+      cached.filter((item) => !item.id.startsWith(prefix))
+    );
+  }
+
   return deleted;
 }
 
 export function removeAuthorIndex(authorId: string): void {
   indexCache.delete(authorId);
+  metadataCache.delete(authorId);
   const dir = getIndexDir(authorId);
   fs.rmSync(dir, { recursive: true, force: true });
 }

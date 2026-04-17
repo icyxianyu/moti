@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthor, updateAuthor, deleteAuthor } from "@/lib/db";
 import type { StyleStatus } from "@/lib/db";
+import { ensureQueueWorkersStarted } from "@/lib/job-queue";
 import { removeAuthorIndex } from "@/lib/vector-store";
 import { nowISO } from "@/lib/utils";
 
@@ -9,6 +10,8 @@ interface Ctx {
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  ensureQueueWorkersStarted();
+
   const { id } = await ctx.params;
   const author = getAuthor(id);
   if (!author) {

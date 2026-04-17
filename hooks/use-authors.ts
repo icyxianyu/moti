@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
-export type StyleStatus = "idle" | "analyzing" | "done" | "failed";
+export type StyleStatus = "idle" | "queued" | "analyzing" | "done" | "failed";
 
 export interface Author {
   id: string;
@@ -14,7 +14,7 @@ export interface Author {
   updated_at: string;
 }
 
-const POLL_INTERVAL = 3000; // 分析中时每 3 秒轮询一次
+const POLL_INTERVAL = 3000; // 排队中 / 分析中时每 3 秒轮询一次
 
 export function useAuthors() {
   const [authors, setAuthors] = useState<Author[]>([]);
@@ -55,7 +55,7 @@ export function useAuthors() {
 
   useEffect(() => {
     fetchAuthors();
-  }, []);
+  }, [fetchAuthors]);
 
   useEffect(() => {
     if (currentAuthorId) {
@@ -64,20 +64,20 @@ export function useAuthors() {
   }, [currentAuthorId, fetchStatus]);
 
   const currentAuthor = authors.find((a) => a.id === currentAuthorId) ?? null;
+  const shouldPollCurrentAuthor = currentAuthor?.style_status === "queued" || currentAuthor?.style_status === "analyzing";
 
-  // 当前作者处于 analyzing 状态时，自动轮询
+  // 当前作者处于 queued / analyzing 状态时，自动轮询
   useEffect(() => {
-    // 清除旧的轮询
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
 
-    if (currentAuthor?.style_status === "analyzing" && currentAuthorId) {
+    if (shouldPollCurrentAuthor && currentAuthorId) {
       pollTimerRef.current = setInterval(async () => {
         const updated = await fetchCurrentAuthor(currentAuthorId);
-        // 如果分析完成或失败，停止轮询
-        if (updated && updated.style_status !== "analyzing") {
+        // 分析完成或失败后，停止轮询
+        if (updated && updated.style_status !== "queued" && updated.style_status !== "analyzing") {
           if (pollTimerRef.current) {
             clearInterval(pollTimerRef.current);
             pollTimerRef.current = null;
@@ -92,7 +92,7 @@ export function useAuthors() {
         pollTimerRef.current = null;
       }
     };
-  }, [currentAuthor?.style_status, currentAuthorId, fetchCurrentAuthor]);
+  }, [shouldPollCurrentAuthor, currentAuthorId, fetchCurrentAuthor]);
 
   return {
     authors,

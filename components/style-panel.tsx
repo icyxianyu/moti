@@ -51,13 +51,14 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
   const [styleText, setStyleText] = useState(author.style_md ?? "");
   const [saving, setSaving] = useState(false);
 
-  // 当 author 数据变化时，同步本地编辑文本
   useEffect(() => {
     setStyleText(author.style_md ?? "");
     setEditing(false);
   }, [author.id, author.style_md]);
 
+  const isQueued = author.style_status === "queued";
   const isAnalyzing = author.style_status === "analyzing";
+  const isBusy = isQueued || isAnalyzing;
   const isDone = author.style_status === "done";
   const isFailed = author.style_status === "failed";
   const hasStyle = !!author.style_md;
@@ -68,12 +69,10 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
         method: "POST",
       });
       if (res.ok) {
-        // API 会立即返回 analyzing 状态，刷新作者列表以触发轮询
         onRefreshAuthors();
       } else {
         const data = await res.json();
         if (res.status === 409) {
-          // 已经在分析中，仅刷新状态
           onRefreshAuthors();
         } else {
           console.error("[StylePanel] 分析请求失败:", data.error);
@@ -99,25 +98,27 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
     }
   }, [author.id, styleText, onRefreshAuthors]);
 
-  // 提取风格摘要（取前 2 行或前 120 字符）
   const styleSummary = (() => {
     if (!styleText) return "";
     const lines = styleText.split("\n").filter((l) => l.trim());
     const first2 = lines.slice(0, 2).join("  ·  ");
-    return first2.length > 120 ? first2.slice(0, 120) + "…" : first2;
+    return first2.length > 120 ? `${first2.slice(0, 120)}…` : first2;
   })();
 
   return (
     <div className="rounded-lg border border-[#2A2A2E] bg-[#141416] overflow-hidden">
-      {/* Header: 始终可见 */}
       <div className="flex items-center gap-2 px-3 py-2.5">
         <Sparkles className="h-3.5 w-3.5 text-[#C8A96E] flex-shrink-0" />
         <span className="text-xs font-medium text-[#A1A1AA] flex-shrink-0">
           写作风格
         </span>
 
-        {/* 状态 badge */}
-        {isAnalyzing ? (
+        {isQueued ? (
+          <div className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 border border-amber-500/20">
+            <Clock className="h-2.5 w-2.5 text-amber-400" />
+            <span className="text-[10px] text-amber-400">排队中</span>
+          </div>
+        ) : isAnalyzing ? (
           <div className="flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 border border-blue-500/20">
             <Loader2 className="h-2.5 w-2.5 text-blue-400 animate-spin" />
             <span className="text-[10px] text-blue-400">分析中</span>
@@ -138,8 +139,7 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
           </div>
         )}
 
-        {/* 上次分析时间 */}
-        {author.style_analyzed_at && !isAnalyzing && (
+        {author.style_analyzed_at && !isBusy && (
           <div className="flex items-center gap-1 text-[10px] text-[#52525B]">
             <Clock className="h-2.5 w-2.5" />
             <span>{formatAnalyzedTime(author.style_analyzed_at)}</span>
@@ -148,20 +148,23 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
 
         <div className="flex-1" />
 
-        {/* 分析按钮 */}
         <Button
           onClick={handleAnalyze}
-          disabled={isAnalyzing}
+          disabled={isBusy}
           variant="ghost"
           size="sm"
           className="h-7 px-2.5 text-xs text-[#A1A1AA] hover:text-[#C8A96E] hover:bg-[#C8A96E]/5"
         >
           {isAnalyzing ? (
             <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+          ) : isQueued ? (
+            <Clock className="mr-1.5 h-3 w-3" />
           ) : (
             <Wand2 className="mr-1.5 h-3 w-3" />
           )}
-          {isAnalyzing
+          {isQueued
+            ? "排队中…"
+            : isAnalyzing
             ? "分析中…"
             : isFailed
             ? "重试分析"
@@ -170,8 +173,7 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
             : "分析风格"}
         </Button>
 
-        {/* 展开/收起 */}
-        {hasStyle && !isAnalyzing && (
+        {hasStyle && !isBusy && (
           <button
             onClick={() => setExpanded(!expanded)}
             className="p-1 text-[#52525B] hover:text-[#A1A1AA] transition-colors"
@@ -185,7 +187,19 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
         )}
       </div>
 
-      {/* 分析中的进度提示 */}
+      {isQueued && (
+        <div className="border-t border-[#2A2A2E]/50 px-3 py-3">
+          <div className="flex items-center gap-2">
+            <div className="relative h-1 flex-1 rounded-full bg-[#2A2A2E] overflow-hidden">
+              <div className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-amber-500/60 animate-[shimmer_1.8s_ease-in-out_infinite]" />
+            </div>
+            <span className="text-[10px] text-[#A1A1AA] flex-shrink-0">
+              已加入风格分析队列，等待可用处理槽位…
+            </span>
+          </div>
+        </div>
+      )}
+
       {isAnalyzing && (
         <div className="border-t border-[#2A2A2E]/50 px-3 py-3">
           <div className="flex items-center gap-2">
@@ -199,7 +213,6 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
         </div>
       )}
 
-      {/* 分析失败的提示 */}
       {isFailed && !hasStyle && (
         <div className="border-t border-[#2A2A2E]/50 px-3 py-2">
           <p className="text-[11px] text-red-400/70">
@@ -208,8 +221,7 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
         </div>
       )}
 
-      {/* 风格摘要预览（折叠时显示） */}
-      {hasStyle && !expanded && !isAnalyzing && (
+      {hasStyle && !expanded && !isBusy && (
         <div
           onClick={() => setExpanded(true)}
           className="cursor-pointer border-t border-[#2A2A2E]/50 px-3 py-2 hover:bg-[#1C1C20]/50 transition-colors"
@@ -220,8 +232,7 @@ export function StylePanel({ author, onRefreshAuthors }: Props) {
         </div>
       )}
 
-      {/* 展开后的完整内容 */}
-      {hasStyle && expanded && !isAnalyzing && (
+      {hasStyle && expanded && !isBusy && (
         <div className="border-t border-[#2A2A2E]">
           {editing ? (
             <div className="p-3 space-y-2">
