@@ -606,6 +606,24 @@ export function findActiveQueueJob<TPayload = unknown, TResult = unknown>(
   return row ? toQueueJob<TPayload, TResult>(row) : undefined;
 }
 
+/**
+ * 列出指定作者下所有"进行中"的 job（queued / processing）。
+ * 用于前端页面刷新后恢复上传进度：浏览器 state 丢了，但 DB 里的任务还在跑，
+ * 通过该接口拿回文件名+状态，继续轮询即可。
+ */
+export function listActiveQueueJobs<TPayload = unknown, TResult = unknown>(
+  type: QueueJobType,
+  authorId: string
+): QueueJob<TPayload, TResult>[] {
+  const rows = db.prepare(
+    `SELECT * FROM queue_jobs
+     WHERE type = ? AND author_id = ? AND status IN ('queued', 'processing')
+     ORDER BY created_at ASC`
+  ).all(type, authorId) as QueueJobRow[];
+
+  return rows.map((row) => toQueueJob<TPayload, TResult>(row));
+}
+
 export function claimNextQueuedJob<TPayload = unknown, TResult = unknown>(
   type: QueueJobType,
   now: string

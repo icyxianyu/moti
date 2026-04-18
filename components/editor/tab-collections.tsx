@@ -58,7 +58,8 @@ export function TabCollections({ authorId, author, uploadManager }: Props) {
   const [viewLoading, setViewLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { uploadTasks, uploading, doneCount, totalCount, processFiles } = uploadManager;
+  const { uploadTasks, uploading, doneCount, totalCount, processFiles, hydrateFromServer } =
+    uploadManager;
 
   const fetchCollections = useCallback(async () => {
     const res = await fetch(`/api/authors/${authorId}/collections`);
@@ -67,7 +68,10 @@ export function TabCollections({ authorId, author, uploadManager }: Props) {
 
   useEffect(() => {
     fetchCollections();
-  }, [authorId, fetchCollections]);
+    // 切换到该作者时，拉一次"进行中的 ingest 任务"恢复进度条——
+    // 用户上传后刷新页面、或从别处跳回来时，仍能看到剩余任务并继续轮询
+    hydrateFromServer(authorId);
+  }, [authorId, fetchCollections, hydrateFromServer]);
 
   useEffect(() => {
     fetch("/api/me")
@@ -262,7 +266,7 @@ export function TabCollections({ authorId, author, uploadManager }: Props) {
                     : "text-[#E4E4E7]"
                 }`}
               >
-                {task.file.name}
+                {task.filename}
               </span>
               {task.status === "queued" && (
                 <span className="text-amber-400/80 flex-shrink-0 text-[10px]">排队中</span>

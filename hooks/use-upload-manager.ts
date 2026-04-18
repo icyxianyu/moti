@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 const POLL_INTERVAL = 2000;
 
@@ -8,8 +8,16 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * 上传任务视图模型。
+ *
+ * 为什么 filename 而不是 File 对象：
+ *   - UI 里其实只用到 file.name
+ *   - 页面刷新后从服务端 hydrate 时拿不到 File，只拿得到 filename
+ *   - 用字符串统一两种来源（新上传 / 从 DB 恢复）避免分支
+ */
 export interface UploadTask {
-  file: File;
+  filename: string;
   status: "pending" | "queued" | "processing" | "done" | "error";
   jobId?: string;
   collectionId?: string;
@@ -23,6 +31,7 @@ export interface UploadManager {
   doneCount: number;
   totalCount: number;
   processFiles: (authorId: string, files: File[]) => Promise<void>;
+  hydrateFromServer: (authorId: string) => Promise<void>;
   clearCompleted: () => void;
 }
 
@@ -35,10 +44,147 @@ interface JobStatusResponse {
   error?: string | null;
 }
 
+interface ActiveJobFromServer {
+  job_id: string;
+  collection_id: string;
+  filename: string;
+  status: "queued" | "processing";
+  created_at: string;
+}
+
 export function useUploadManager(onAllDone?: (authorId: string) => void): UploadManager {
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
   const [uploading, setUploading] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 正在进行的轮询标识：避免 processFiles 与 hydrateFromServer 重复起轮询
+  const pollingRef = useRef(false);
+  // 轮询用到的最新任务快照（由 state 同步）；轮询循环通过 ref 拿到任意时刻最新列表
+  const tasksRef = useRef<UploadTask[]>([]);
+  useEffect(() => {
+    tasksRef.current = uploadTasks;
+  }, [uploadTasks]);
+
+  /** 根据 jobId 局部更新 task；找不到对应 jobId 时忽略（任务已被清理） */
+  const patchTaskByJobId = useCallback((jobId: string, patch: Partial<UploadTask>) => {
+    setUploadTasks((prev) => prev.map((task) => (task.jobId === jobId ? { ...task, ...patch } : task)));
+  }, []);
+
+  /**
+   * 统一的轮询循环：扫 state 里所有 queued/processing 的 task，按 jobId 去后端查状态。
+   * - 同一时刻只会有一个轮询循环在跑（pollingRef 保护）
+   * - 轮询期间新 push 的 task 会被自动纳入（依赖 tasksRef）
+   * - 所有任务都非 active 时退出，清理 uploading 标志
+   */
+  const pollActiveJobs = useCallback(
+    async (authorId: string) => {
+      if (pollingRef.current) return;
+      pollingRef.current = true;
+      setUploading(true);
+
+      try {
+        while (true) {
+          const activeTasks = tasksRef.current.filter(
+            (task) => task.jobId && (task.status === "queued" || task.status === "processing")
+          );
+          if (activeTasks.length === 0) break;
+
+          const results = await Promise.all(
+            activeTasks.map(async (task) => {
+              try {
+                const res = await fetch(`/api/jobs/${task.jobId}`);
+                const data = await res.json();
+                return { jobId: task.jobId!, ok: res.ok, data };
+              } catch (err) {
+                return {
+                  jobId: task.jobId!,
+                  ok: false,
+                  data: { error: err instanceof Error ? err.message : "获取任务状态失败" },
+                };
+              }
+            })
+          );
+
+          for (const { jobId, ok, data } of results) {
+            if (!ok) {
+              patchTaskByJobId(jobId, { status: "error", error: data.error ?? "获取任务状态失败" });
+              continue;
+            }
+            const job = data as JobStatusResponse;
+            if (job.status === "queued") {
+              patchTaskByJobId(jobId, { status: "queued" });
+            } else if (job.status === "processing") {
+              patchTaskByJobId(jobId, { status: "processing" });
+            } else if (job.status === "done") {
+              patchTaskByJobId(jobId, {
+                status: "done",
+                chunkCount: job.result?.chunk_count,
+                collectionId: job.result?.collection_id,
+                error: undefined,
+              });
+            } else if (job.status === "failed") {
+              patchTaskByJobId(jobId, { status: "error", error: job.error ?? "建索引失败" });
+            }
+          }
+
+          await sleep(POLL_INTERVAL);
+        }
+      } finally {
+        pollingRef.current = false;
+        setUploading(false);
+        onAllDone?.(authorId);
+
+        // 5 秒后自动收走已成功的任务，保留失败项让用户看清错误
+        if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
+        clearTimerRef.current = setTimeout(() => {
+          setUploadTasks((prev) => prev.filter((task) => task.status === "error"));
+        }, 5000);
+      }
+    },
+    [onAllDone, patchTaskByJobId]
+  );
+
+  /**
+   * 进页面或切换作者时调用：从后端拉取"该作者进行中的 ingest 任务"，
+   * 合并进 state 并启动轮询，让用户刷新后依然看得到上传进度。
+   */
+  const hydrateFromServer = useCallback(
+    async (authorId: string) => {
+      let activeJobs: ActiveJobFromServer[] = [];
+      try {
+        const res = await fetch(`/api/authors/${authorId}/jobs`);
+        if (!res.ok) return;
+        activeJobs = (await res.json()) as ActiveJobFromServer[];
+      } catch {
+        return;
+      }
+
+      if (activeJobs.length === 0) return;
+
+      setUploadTasks((prev) => {
+        // 已经在 state 里的 jobId 不重复加；未完成的保留原样，其它的以服务端数据为准
+        const existingJobIds = new Set(prev.filter((t) => t.jobId).map((t) => t.jobId!));
+        const hydrated: UploadTask[] = activeJobs
+          .filter((j) => !existingJobIds.has(j.job_id))
+          .map((j) => ({
+            filename: j.filename,
+            status: j.status,
+            jobId: j.job_id,
+            collectionId: j.collection_id,
+          }));
+        return [...prev, ...hydrated];
+      });
+
+      // 清掉上一次上传批次结束后的"自动清理定时器"，避免刚 hydrate 进来又被扫走
+      if (clearTimerRef.current) {
+        clearTimeout(clearTimerRef.current);
+        clearTimerRef.current = null;
+      }
+
+      void pollActiveJobs(authorId);
+    },
+    [pollActiveJobs]
+  );
 
   const processFiles = useCallback(
     async (authorId: string, files: File[]) => {
@@ -50,23 +196,26 @@ export function useUploadManager(onAllDone?: (authorId: string) => void): Upload
         clearTimerRef.current = null;
       }
 
-      const localTasks: UploadTask[] = txtFiles.map((file) => ({
-        file,
+      // 本批次新增的 task 先塞进 state，标记 pending
+      const batchStartIndex = tasksRef.current.length;
+      const newTasks: UploadTask[] = txtFiles.map((f) => ({
+        filename: f.name,
         status: "pending",
       }));
-      setUploadTasks(localTasks);
-      setUploading(true);
+      setUploadTasks((prev) => [...prev, ...newTasks]);
 
-      const patchTask = (index: number, patch: Partial<UploadTask>) => {
-        localTasks[index] = { ...localTasks[index], ...patch };
+      // 按索引定位本批次任务并 patch（不用 jobId 因为此时还没有）
+      const patchBatchTask = (batchIdx: number, patch: Partial<UploadTask>) => {
+        const absoluteIdx = batchStartIndex + batchIdx;
         setUploadTasks((prev) =>
-          prev.map((task, idx) => (idx === index ? { ...task, ...patch } : task))
+          prev.map((task, idx) => (idx === absoluteIdx ? { ...task, ...patch } : task))
         );
       };
 
-      for (let i = 0; i < localTasks.length; i++) {
+      // 串行上传：一个接一个 POST，避免把请求一次性打给服务端
+      for (let i = 0; i < txtFiles.length; i++) {
         const formData = new FormData();
-        formData.append("file", localTasks[i].file);
+        formData.append("file", txtFiles[i]);
 
         try {
           const res = await fetch(`/api/authors/${authorId}/collections`, {
@@ -78,91 +227,31 @@ export function useUploadManager(onAllDone?: (authorId: string) => void): Upload
           if (res.ok) {
             const job = data.job ?? data.jobs?.[0];
             if (!job?.job_id) {
-              patchTask(i, { status: "error", error: "服务端未返回任务 ID" });
+              patchBatchTask(i, { status: "error", error: "服务端未返回任务 ID" });
               continue;
             }
-
-            patchTask(i, {
+            patchBatchTask(i, {
               status: "queued",
               jobId: job.job_id,
               collectionId: job.collection_id,
             });
           } else {
-            patchTask(i, {
+            patchBatchTask(i, {
               status: "error",
               error: data.error ?? data.errors?.[0]?.error ?? "上传失败",
             });
           }
         } catch (err) {
-          patchTask(i, {
+          patchBatchTask(i, {
             status: "error",
             error: err instanceof Error ? err.message : "上传失败",
           });
         }
       }
 
-      while (true) {
-        const activeTasks = localTasks
-          .map((task, index) => ({ task, index }))
-          .filter(({ task }) => task.jobId && (task.status === "queued" || task.status === "processing"));
-
-        if (activeTasks.length === 0) {
-          break;
-        }
-
-        const results = await Promise.all(
-          activeTasks.map(async ({ task, index }) => {
-            try {
-              const res = await fetch(`/api/jobs/${task.jobId}`);
-              const data = await res.json();
-              return { index, ok: res.ok, data };
-            } catch (err) {
-              return {
-                index,
-                ok: false,
-                data: { error: err instanceof Error ? err.message : "获取任务状态失败" },
-              };
-            }
-          })
-        );
-
-        for (const { index, ok, data } of results) {
-          if (!ok) {
-            patchTask(index, { status: "error", error: data.error ?? "获取任务状态失败" });
-            continue;
-          }
-
-          const job = data as JobStatusResponse;
-          if (job.status === "queued") {
-            patchTask(index, { status: "queued" });
-          } else if (job.status === "processing") {
-            patchTask(index, { status: "processing" });
-          } else if (job.status === "done") {
-            patchTask(index, {
-              status: "done",
-              chunkCount: job.result?.chunk_count,
-              collectionId: job.result?.collection_id,
-              error: undefined,
-            });
-          } else if (job.status === "failed") {
-            patchTask(index, {
-              status: "error",
-              error: job.error ?? "建索引失败",
-            });
-          }
-        }
-
-        await sleep(POLL_INTERVAL);
-      }
-
-      setUploading(false);
-      onAllDone?.(authorId);
-
-      clearTimerRef.current = setTimeout(() => {
-        setUploadTasks((prev) => prev.filter((task) => task.status === "error"));
-      }, 5000);
+      await pollActiveJobs(authorId);
     },
-    [onAllDone]
+    [pollActiveJobs]
   );
 
   const clearCompleted = useCallback(() => {
@@ -178,6 +267,7 @@ export function useUploadManager(onAllDone?: (authorId: string) => void): Upload
     doneCount,
     totalCount,
     processFiles,
+    hydrateFromServer,
     clearCompleted,
   };
 }
