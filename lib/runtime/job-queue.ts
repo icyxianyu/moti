@@ -6,6 +6,7 @@ import {
   getAuthor,
   getCollectionTexts,
   getUser,
+  recoverStuckProcessingJobs,
   type AnalyzeStyleJobPayload,
   type AnalyzeStyleJobResult,
   type IngestCollectionJobPayload,
@@ -196,6 +197,18 @@ export function ensureQueueWorkersStarted() {
   }
 
   state.booted = true;
+
+  // 启动时回收"僵尸 processing job"：容器重启前正在跑的任务，worker 已没了，
+  // 这些 job 会永远卡在 processing 状态被前端反复轮询。重置回 queued 重新执行。
+  try {
+    const recovered = recoverStuckProcessingJobs(nowISO());
+    if (recovered > 0) {
+      console.log(`[job-queue] 启动时回收 ${recovered} 个中断的 processing 任务 → 重置为 queued`);
+    }
+  } catch (err) {
+    console.error("[job-queue] 回收僵尸任务失败:", err);
+  }
+
   setTimeout(() => {
     for (const type of QUEUE_TYPES) {
       void drainQueue(type);

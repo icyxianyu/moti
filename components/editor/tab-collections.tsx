@@ -71,7 +71,12 @@ export function TabCollections({ authorId, author, uploadManager }: Props) {
     // 切换到该作者时，拉一次"进行中的 ingest 任务"恢复进度条——
     // 用户上传后刷新页面、或从别处跳回来时，仍能看到剩余任务并继续轮询
     hydrateFromServer(authorId);
-  }, [authorId, fetchCollections, hydrateFromServer]);
+    // 只依赖 authorId：fetchCollections / hydrateFromServer 是 useCallback，
+    // 但父组件重渲染可能让它们的引用变化，放进依赖会导致 effect 反复执行，
+    // 触发对 /api/authors/{id}/jobs、/api/authors/{id}/collections 的无限刷新。
+    // 这里明确忽略 ESLint 的 exhaustive-deps 警告。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authorId]);
 
   useEffect(() => {
     fetch("/api/me")

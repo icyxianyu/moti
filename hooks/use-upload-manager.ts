@@ -57,8 +57,8 @@ export function useUploadManager(onAllDone?: (authorId: string) => void): Upload
   const [uploading, setUploading] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 正在进行的轮询标识：避免 processFiles 与 hydrateFromServer 重复起轮询
-  const pollingRef = useRef(false);
+  // 正在轮询的 authorId：避免对同一作者重复起轮询；切换作者时会自动用新 authorId 重启
+  const pollingAuthorRef = useRef<string | null>(null);
   // 轮询用到的最新任务快照（由 state 同步）；轮询循环通过 ref 拿到任意时刻最新列表
   const tasksRef = useRef<UploadTask[]>([]);
   useEffect(() => {
@@ -71,66 +71,126 @@ export function useUploadManager(onAllDone?: (authorId: string) => void): Upload
   }, []);
 
   /**
-   * 统一的轮询循环：扫 state 里所有 queued/processing 的 task，按 jobId 去后端查状态。
-   * - 同一时刻只会有一个轮询循环在跑（pollingRef 保护）
-   * - 轮询期间新 push 的 task 会被自动纳入（依赖 tasksRef）
-   * - 所有任务都非 active 时退出，清理 uploading 标志
+   * 统一的轮询循环（**单请求版**）：
+   * 每一轮只打一个 `/api/authors/{id}/jobs`，后端一次性返回该作者所有 active job，
+   * 不再按 jobId 一个个打 `/api/jobs/{id}`。
+   *
+   * 为什么这样改：
+   *   - 旧版用 Promise.all 并发查每个 job，N 个 job 就 N 个请求
+   *   - 用户如果积了 200 个僵尸 job，每 2 秒就打 200 个请求 = 100 req/s，把 CPU/带宽打爆
+   *   - 服务端本来就有"按 author 列 active job"的接口，复用即可，一次请求解决
+   *
+   * 同时承担 hydrate 职责：
+   *   - 轮询返回的 active job 列表就是最新真相
+   *   - state 里没有的 jobId 自动补进来（对应从别处跳回来 / 刷新页面的场景）
+   *   - state 里有但服务端没返回的（说明已完成/失败），按 jobId 去 `/api/jobs/{id}` 拉终态
+   *
+   * 并发保护：同 authorId 不会重复起轮询；切换作者时外层会调用 `stopPolling` 终止。
    */
   const pollActiveJobs = useCallback(
     async (authorId: string) => {
-      if (pollingRef.current) return;
-      pollingRef.current = true;
+      if (pollingAuthorRef.current === authorId) return;
+      pollingAuthorRef.current = authorId;
       setUploading(true);
 
       try {
-        while (true) {
-          const activeTasks = tasksRef.current.filter(
-            (task) => task.jobId && (task.status === "queued" || task.status === "processing")
-          );
-          if (activeTasks.length === 0) break;
-
-          const results = await Promise.all(
-            activeTasks.map(async (task) => {
-              try {
-                const res = await fetch(`/api/jobs/${task.jobId}`);
-                const data = await res.json();
-                return { jobId: task.jobId!, ok: res.ok, data };
-              } catch (err) {
-                return {
-                  jobId: task.jobId!,
-                  ok: false,
-                  data: { error: err instanceof Error ? err.message : "获取任务状态失败" },
-                };
-              }
-            })
-          );
-
-          for (const { jobId, ok, data } of results) {
-            if (!ok) {
-              patchTaskByJobId(jobId, { status: "error", error: data.error ?? "获取任务状态失败" });
-              continue;
+        while (pollingAuthorRef.current === authorId) {
+          // 1) 拉当前作者的 active job 列表（唯一网络请求）
+          let activeJobs: ActiveJobFromServer[] = [];
+          try {
+            const res = await fetch(`/api/authors/${authorId}/jobs`);
+            if (res.ok) {
+              activeJobs = (await res.json()) as ActiveJobFromServer[];
             }
-            const job = data as JobStatusResponse;
-            if (job.status === "queued") {
-              patchTaskByJobId(jobId, { status: "queued" });
-            } else if (job.status === "processing") {
-              patchTaskByJobId(jobId, { status: "processing" });
-            } else if (job.status === "done") {
-              patchTaskByJobId(jobId, {
-                status: "done",
-                chunkCount: job.result?.chunk_count,
-                collectionId: job.result?.collection_id,
-                error: undefined,
-              });
-            } else if (job.status === "failed") {
-              patchTaskByJobId(jobId, { status: "error", error: job.error ?? "建索引失败" });
+          } catch {
+            // 网络异常不中断轮询，下一轮再试
+          }
+
+          const activeIdSet = new Set(activeJobs.map((j) => j.job_id));
+
+          // 2) 合并到 state：
+          //    - 服务端返回的 → 更新对应 task 状态；state 里没有的就新增（hydrate）
+          //    - state 里是 active 但服务端没返回的 → 说明已完成/失败，下一步去拉终态
+          const stateJobIds = new Set(
+            tasksRef.current.filter((t) => t.jobId).map((t) => t.jobId!)
+          );
+          const toAdd: UploadTask[] = activeJobs
+            .filter((j) => !stateJobIds.has(j.job_id))
+            .map((j) => ({
+              filename: j.filename,
+              status: j.status,
+              jobId: j.job_id,
+              collectionId: j.collection_id,
+            }));
+
+          setUploadTasks((prev) => {
+            const updated = prev.map((task) => {
+              if (!task.jobId) return task;
+              const server = activeJobs.find((j) => j.job_id === task.jobId);
+              if (server) return { ...task, status: server.status };
+              return task;
+            });
+            return toAdd.length > 0 ? [...updated, ...toAdd] : updated;
+          });
+
+          // 3) 对 state 里"active 但服务端没返回"的 job，按 id 拉终态（done / failed）
+          const resolvedIds = tasksRef.current
+            .filter(
+              (t) =>
+                t.jobId &&
+                (t.status === "queued" || t.status === "processing") &&
+                !activeIdSet.has(t.jobId)
+            )
+            .map((t) => t.jobId!);
+
+          if (resolvedIds.length > 0) {
+            const finals = await Promise.all(
+              resolvedIds.map(async (jobId) => {
+                try {
+                  const res = await fetch(`/api/jobs/${jobId}`);
+                  const data = await res.json();
+                  return { jobId, ok: res.ok, data };
+                } catch (err) {
+                  return {
+                    jobId,
+                    ok: false,
+                    data: { error: err instanceof Error ? err.message : "获取任务状态失败" },
+                  };
+                }
+              })
+            );
+            for (const { jobId, ok, data } of finals) {
+              if (!ok) {
+                patchTaskByJobId(jobId, { status: "error", error: data.error ?? "获取任务状态失败" });
+                continue;
+              }
+              const job = data as JobStatusResponse;
+              if (job.status === "done") {
+                patchTaskByJobId(jobId, {
+                  status: "done",
+                  chunkCount: job.result?.chunk_count,
+                  collectionId: job.result?.collection_id,
+                  error: undefined,
+                });
+              } else if (job.status === "failed") {
+                patchTaskByJobId(jobId, { status: "error", error: job.error ?? "建索引失败" });
+              }
+              // 注：queued/processing 理论上不会出现在这里，保持现状
             }
           }
+
+          // 4) 所有任务都不再 active → 退出
+          const stillActive = tasksRef.current.some(
+            (t) => t.jobId && (t.status === "queued" || t.status === "processing")
+          );
+          if (!stillActive && activeJobs.length === 0) break;
 
           await sleep(POLL_INTERVAL);
         }
       } finally {
-        pollingRef.current = false;
+        if (pollingAuthorRef.current === authorId) {
+          pollingAuthorRef.current = null;
+        }
         setUploading(false);
         onAllDone?.(authorId);
 
@@ -145,42 +205,16 @@ export function useUploadManager(onAllDone?: (authorId: string) => void): Upload
   );
 
   /**
-   * 进页面或切换作者时调用：从后端拉取"该作者进行中的 ingest 任务"，
-   * 合并进 state 并启动轮询，让用户刷新后依然看得到上传进度。
+   * 进页面或切换作者时调用：直接启动轮询，首轮会自动 hydrate（把服务端 active job 补进 state）。
+   * 旧实现会多打一次 `/api/authors/{id}/jobs`，现在轮询本身就是这个接口，省掉重复请求。
    */
   const hydrateFromServer = useCallback(
     async (authorId: string) => {
-      let activeJobs: ActiveJobFromServer[] = [];
-      try {
-        const res = await fetch(`/api/authors/${authorId}/jobs`);
-        if (!res.ok) return;
-        activeJobs = (await res.json()) as ActiveJobFromServer[];
-      } catch {
-        return;
-      }
-
-      if (activeJobs.length === 0) return;
-
-      setUploadTasks((prev) => {
-        // 已经在 state 里的 jobId 不重复加；未完成的保留原样，其它的以服务端数据为准
-        const existingJobIds = new Set(prev.filter((t) => t.jobId).map((t) => t.jobId!));
-        const hydrated: UploadTask[] = activeJobs
-          .filter((j) => !existingJobIds.has(j.job_id))
-          .map((j) => ({
-            filename: j.filename,
-            status: j.status,
-            jobId: j.job_id,
-            collectionId: j.collection_id,
-          }));
-        return [...prev, ...hydrated];
-      });
-
-      // 清掉上一次上传批次结束后的"自动清理定时器"，避免刚 hydrate 进来又被扫走
+      // 清掉上一次上传批次结束后的"自动清理定时器"，避免刚启动轮询又被扫走
       if (clearTimerRef.current) {
         clearTimeout(clearTimerRef.current);
         clearTimerRef.current = null;
       }
-
       void pollActiveJobs(authorId);
     },
     [pollActiveJobs]

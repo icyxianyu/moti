@@ -673,6 +673,24 @@ export function failQueueJob(id: string, error: string, now: string): void {
   ).run(error, now, now, id);
 }
 
+/**
+ * 容器重启时，之前标为 processing 的 job 实际 worker 已消失。
+ * 这里把它们重置回 queued，让新 worker 重新 claim 执行。
+ *
+ * 为什么不直接 fail：用户上传后被中断不是用户的错，默认给一次重跑机会。
+ * 如果担心某个 job 本身有毒（每次 claim 都崩），可以加 attempt_count 限制。
+ *
+ * @returns 被重置的 job 数量
+ */
+export function recoverStuckProcessingJobs(now: string): number {
+  const result = db.prepare(
+    `UPDATE queue_jobs
+     SET status = 'queued', started_at = NULL, updated_at = ?
+     WHERE status = 'processing'`
+  ).run(now);
+  return result.changes;
+}
+
 // ── Generation CRUD ──────────────────────────────────────────────────────────
 
 export type GenerationStatus = "completed" | "aborted" | "failed";
