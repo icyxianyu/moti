@@ -2,17 +2,21 @@
 
 # ── Stage 1: 安装全量依赖（含 devDependencies 用于 build）───────
 FROM node:20-alpine AS deps
-RUN apk add --no-cache python3 make g++ libc6-compat
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories \
+ && apk add --no-cache python3 make g++ libc6-compat
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@latest --activate \
+ && pnpm config set registry https://registry.npmmirror.com
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # ── Stage 2: 构建 Next.js ─────────────────────────────────────
 FROM node:20-alpine AS builder
-RUN apk add --no-cache python3 make g++ libc6-compat
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories \
+ && apk add --no-cache python3 make g++ libc6-compat
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@latest --activate \
+ && pnpm config set registry https://registry.npmmirror.com
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -20,16 +24,19 @@ RUN pnpm build
 
 # ── Stage 3: 只装生产依赖（剔除 devDependencies）────────────────
 FROM node:20-alpine AS prod-deps
-RUN apk add --no-cache python3 make g++ libc6-compat
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories \
+ && apk add --no-cache python3 make g++ libc6-compat
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@latest --activate \
+ && pnpm config set registry https://registry.npmmirror.com
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Stage 4: 生产运行（最小镜像，不含编译工具链）────────────────
 FROM node:20-alpine AS runner
 # better-sqlite3 运行期只需要 libstdc++（alpine 默认不带）
-RUN apk add --no-cache libstdc++ libc6-compat
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories \
+ && apk add --no-cache libstdc++ libc6-compat
 WORKDIR /app
 
 ENV NODE_ENV=production
