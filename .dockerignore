@@ -1,9 +1,15 @@
 node_modules/
 .next/
 .git/
+.gitignore
 .env
-.env.local
+.env.*
+!.env.example
 data/
 *.md
+!README.md
 .DS_Store
 .vscode/
+Dockerfile
+docker-compose.yml
+tsconfig.tsbuildinfo

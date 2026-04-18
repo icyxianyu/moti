@@ -1,121 +1,125 @@
-# 部署指南
+# 部署指南（腾讯云 Docker）
 
-## 前提条件
+## 0. 前提条件
 
-- 腾讯云轻量服务器（Docker CE 镜像）
-- 服务器公网 IP（购买后在控制台查看）
+- 腾讯云服务器（轻量或 CVM），**推荐 2C4G + 20G 系统盘及以上**
+  - Ollama + embedding 模型常驻约 1–2 GB 内存
+  - Next.js + SQLite 运行时约 300–500 MB
+- 已安装 Docker 20+ 与 Docker Compose v2（轻量服务器的「Docker CE」应用镜像自带；CVM 需手动装）
 
-## 部署步骤
-
-### 1. SSH 登录服务器
+如果服务器没装 Docker：
 
 ```bash
-ssh root@你的公网IP
+curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
+systemctl enable --now docker
 ```
 
-首次登录密码在腾讯云控制台 → 轻量应用服务器 → 重置密码。
-
-### 2. 拉取项目代码
+## 1. 拉取代码
 
 ```bash
-# 方式一：从 Git 仓库拉取（推荐）
-git clone <你的仓库地址> /opt/rag-writer
-cd /opt/rag-writer
-
-# 方式二：从本地上传（如果没有 Git 仓库）
-# 在本地执行：
-# scp -r ./ root@你的公网IP:/opt/rag-writer
+git clone https://github.com/icyxianyu/moti.git /opt/moti
+cd /opt/moti
 ```
 
-### 3. 配置环境变量
+## 2. 配置 `.env`
 
 ```bash
-cd /opt/rag-writer
-
-# 创建 .env 文件（以 DeepSeek 为例，也可换成任意 OpenAI 兼容服务）
-cat > .env << 'EOF'
-LLM_BASE_URL=https://api.deepseek.com
-LLM_API_KEY=你的API密钥
-LLM_MODEL=deepseek-chat
-EOF
+cp .env.example .env
+vim .env
 ```
 
-> Moti 使用 OpenAI 兼容协议，除 DeepSeek 外也支持 OpenAI、通义千问、智谱、Moonshot、硅基流动、本地 vLLM / LM Studio 等。把 `LLM_BASE_URL` 和 `LLM_MODEL` 换成对应服务即可。
+至少需要改动：
 
-### 4. 开放防火墙端口
+| 变量 | 说明 |
+|------|------|
+| `LLM_API_KEY` | DeepSeek / OpenAI 等提供的真实 API Key |
+| `AUTH_SECRET` | NextAuth 会话签名密钥，用 `openssl rand -base64 32` 生成 |
+| `ADMIN_EMAIL` | 初始 admin 邮箱 |
+| `ADMIN_INITIAL_PASSWORD` | **初始强密码**，登录后立即去「设置」页修改 |
 
-在腾讯云控制台 → 轻量应用服务器 → 防火墙，添加规则：
+⚠️ **不要改 `OLLAMA_BASE_URL`**：即使 `.env` 里写的是 `http://localhost:11434`，compose 会在容器内强制覆盖为 `http://ollama:11434`。
 
-| 协议 | 端口 | 策略 | 备注 |
-|------|------|------|------|
-| TCP  | 80   | 允许 | HTTP 访问 |
+## 3. 开放防火墙端口
 
-### 5. 启动服务
+腾讯云控制台 → 轻量应用服务器 / CVM 安全组 → 放行：
+
+| 协议 | 端口 | 备注 |
+|------|------|------|
+| TCP  | 80   | HTTP 访问 |
+| TCP  | 443  | 后续绑域名 HTTPS 时再开 |
+
+## 4. 构建并启动
 
 ```bash
-# 构建并启动（首次需要几分钟）
 docker compose up -d --build
-
-# 查看日志，确认启动成功
-docker compose logs -f
+docker compose logs -f app     # 观察启动日志，出现 "Ready" 即成功
 ```
 
-### 6. 拉取 Embedding 模型
+## 5. 拉取 Embedding 模型（首次必做）
 
 ```bash
-# 首次需要下载 nomic-embed-text 模型（约 274MB）
 docker compose exec ollama ollama pull nomic-embed-text
-
-# 验证模型已安装
-docker compose exec ollama ollama list
+docker compose exec ollama ollama list     # 验证
 ```
 
-### 7. 访问
+## 6. 访问
 
-打开浏览器访问：`http://你的公网IP`
+浏览器打开 `http://<公网IP>`，用 `.env` 里的 `ADMIN_EMAIL` + `ADMIN_INITIAL_PASSWORD` 登录。**登录后务必到「设置」页改密码**。
 
 ---
 
-## 常用运维命令
+## 常用运维
 
 ```bash
-# 查看服务状态
-docker compose ps
-
-# 查看日志
-docker compose logs -f app      # 查看应用日志
-docker compose logs -f ollama   # 查看 Ollama 日志
-
-# 重启服务
-docker compose restart
-
-# 更新代码后重新部署
-git pull
-docker compose up -d --build
-
-# 停止服务
-docker compose down
-
-# 停止并删除数据（慎用！）
-docker compose down -v
+docker compose ps                       # 状态
+docker compose logs -f app              # 应用日志
+docker compose logs -f ollama           # Ollama 日志
+docker compose restart app              # 只重启 app
+docker compose up -d --build            # 更新代码后重建
+docker compose down                     # 停止（保留数据）
+docker compose down -v                  # 停止 + 删除 volume（慎用！）
 ```
 
 ## 数据备份
 
-数据存储在 Docker Volume 中：
-
 ```bash
-# 查看 volume 位置
-docker volume inspect rag-writer_app_data
-
-# 备份 SQLite 数据库
+# 快速备份 SQLite
 docker compose exec app cp /app/data/db.sqlite /app/data/db.sqlite.bak
 docker cp $(docker compose ps -q app):/app/data/db.sqlite.bak ./backup/
 
-# 备份全部数据
-docker run --rm -v rag-writer_app_data:/data -v $(pwd)/backup:/backup alpine tar czf /backup/data.tar.gz -C /data .
+# 全量备份 volume
+docker run --rm \
+  -v rag-writer_app_data:/data \
+  -v "$(pwd)/backup":/backup \
+  alpine tar czf /backup/data-$(date +%Y%m%d).tar.gz -C /data .
 ```
 
 ## 绑定域名 + HTTPS（可选）
 
-如果需要绑定域名和 HTTPS，后续可以加一个 Nginx 反代 + Let's Encrypt 免费证书。
+在 compose 外加一层 Caddy 反代即可自动签发 Let's Encrypt 证书，示例：
+
+```yaml
+# 追加到 docker-compose.yml
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on: [app]
+
+volumes:
+  caddy_data:
+```
+
+`Caddyfile`：
+```
+yourdomain.com {
+  reverse_proxy app:3000
+}
+```
+
+同时把原 `app` 服务的 `ports: - "80:3000"` 删掉（只由 Caddy 对外暴露）。
