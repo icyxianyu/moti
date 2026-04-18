@@ -1,62 +1,81 @@
 import { NextRequest } from "next/server";
-import { getAuthor, createGeneration } from "@/lib/db";
-import type { GenerationStatus } from "@/lib/db";
-import { embed } from "@/lib/embedder";
-import { query, randomSample } from "@/lib/vector-store";
-import { generateArticle } from "@/lib/generator";
-import { generateLimiter } from "@/lib/task-limiter";
+import { createGeneration, consumeQuota, getUser } from "@/lib/db/sqlite";
+import type { GenerationStatus } from "@/lib/db/sqlite";
+import { embed } from "@/lib/ai/embedder";
+import { query, randomSample } from "@/lib/db/vector-store";
+import { generateArticle } from "@/lib/rag/generator";
+import type { LLMConfigOverride } from "@/lib/ai/llm";
+import { generateLimiter } from "@/lib/runtime/task-limiter";
+import { requireUser } from "@/lib/auth/session";
+import { getAuthorForRead } from "@/lib/auth/access";
 import { genId, nowISO } from "@/lib/utils";
 
 interface Ctx {
   params: Promise<{ id: string }>;
 }
 
+const json = (obj: unknown, status: number) =>
+  new Response(JSON.stringify(obj), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+
 export async function POST(req: NextRequest, ctx: Ctx) {
+  const authUser = await requireUser();
+  if (authUser instanceof Response) return authUser;
+
   const { id } = await ctx.params;
-  const author = getAuthor(id);
-  if (!author) {
-    return new Response(JSON.stringify({ error: "作者不存在" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  // 生成 = 读权限即可（公共作家大家都能用来生成）
+  const author = getAuthorForRead(id, authUser);
+  if (author instanceof Response) return author;
 
   const body = await req.json();
   const { topic, extraNote, events, context } = body;
 
   if (!topic || typeof topic !== "string" || !topic.trim()) {
-    return new Response(JSON.stringify({ error: "请提供文章主题" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "请提供文章主题" }, 400);
   }
 
-  if (!process.env.DEEPSEEK_API_KEY) {
-    return new Response(JSON.stringify({ error: "未配置 DEEPSEEK_API_KEY" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+  // 取完整的 user record，拿到 llm_* 覆盖与 quota
+  const userRecord = getUser(authUser.id);
+  if (!userRecord) return json({ error: "会话已失效" }, 401);
+
+  // 配额扣减（admin 初始配额 999999，等同无限制）
+  // 非原子 + 原子：先消费，失败直接 402-like 返回；下面的生成若失败不退还，因为大模型 token 也烧掉了
+  const consumed = consumeQuota(authUser.id, nowISO());
+  if (!consumed) {
+    return json(
+      {
+        error: `本月生成额度已用完（${userRecord.monthly_quota} 次/月）。下月自动重置，或联系管理员提升额度。`,
+        code: "QUOTA_EXCEEDED",
+      },
+      429
+    );
   }
+
+  // 用户自带 LLM：三项齐备才启用；否则 fallback 到系统环境变量
+  const llmOverride: LLMConfigOverride | undefined =
+    userRecord.llm_base_url && userRecord.llm_api_key && userRecord.llm_model
+      ? {
+          baseURL: userRecord.llm_base_url,
+          apiKey: userRecord.llm_api_key,
+          model: userRecord.llm_model,
+        }
+      : undefined;
 
   // 生成任务通常会持续占用检索、模型请求和流式输出资源，因此先抢占一个并发槽位。
   const release = generateLimiter.tryAcquire();
   if (!release) {
-    return new Response(JSON.stringify({ error: "当前生成任务较多，请稍后再试" }), {
-      status: 429,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "当前生成任务较多，请稍后再试" }, 429);
   }
 
   const encoder = new TextEncoder();
-  // 客户端如果提前断开，这里会把取消信号一路传到下游生成流程，避免后台继续白跑。
   const abortController = new AbortController();
 
-  // 在闭包中累积已经产生的 token，方便 abort / error 时把已经生成的内容落库，避免白跑。
   let accumulated = "";
   let persisted = false;
   const persist = (status: GenerationStatus) => {
     if (persisted) return;
-    // 完全没有产出（例如检索阶段就失败）就不要留下一条空记录污染历史列表。
     if (!accumulated.trim()) return;
     persisted = true;
     try {
@@ -69,7 +88,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         extraNote || null,
         accumulated,
         nowISO(),
-        status
+        status,
+        authUser.id // owner_id：历史严格归调用者
       );
     } catch (e) {
       console.error("[generate] persist failed:", e);
@@ -83,10 +103,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       };
 
       try {
-        send("status", { message: "正在检索相关段落…" });
+        send("status", { message: "Moti 正在翻他的旧作，找和这次主题有关的段落…" });
         const queryVec = await embed(topic);
 
-        // 一部分片段按主题召回，另一部分随机采样作为“风格示范”，两者组合后交给生成模型。
         const topicHits = await query(id, queryVec, 3);
         const styleHits = await randomSample(id, 2);
 
@@ -109,7 +128,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           })),
         });
         send("status", {
-          message: `检索到 ${allHits.length} 个参考片段（${topicHits.length} 主题相关 + ${dedupedStyleHits.length} 风格示范），开始生成…`,
+          message: `挑出了 ${allHits.length} 段当参考（${topicHits.length} 段贴主题，${dedupedStyleHits.length} 段学笔法），开始下笔。`,
         });
 
         const fullText = await generateArticle({
@@ -124,34 +143,30 @@ export async function POST(req: NextRequest, ctx: Ctx) {
             send("token", { token });
           },
           signal: abortController.signal,
+          llmOverride,
         });
 
-        // 客户端断开或主动停止时，把已经生成的部分作为 aborted 状态落库，避免完全丢失。
         if (abortController.signal.aborted) {
           persist("aborted");
           return;
         }
 
-        // 正常完成：以 fullText 为准（防止最后一段 token 没走 onToken），覆盖累积值。
         accumulated = fullText;
         persist("completed");
 
         send("done", { message: "生成完成" });
       } catch (err) {
-        // 请求途中报错：如果已经生成了一部分，也应作为 failed 记录保留下来。
         persist("failed");
         if (!abortController.signal.aborted) {
           send("error", { message: (err as Error).message });
         }
       } finally {
-        // 无论成功、失败还是客户端取消，都要释放并发槽位，避免额度泄漏。
         release();
         controller.close();
       }
     },
     cancel() {
       abortController.abort();
-      // cancel() 由 runtime 在客户端断开时触发，这里兜底再写一次。
       persist("aborted");
     },
   });

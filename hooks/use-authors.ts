@@ -3,10 +3,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 export type StyleStatus = "idle" | "queued" | "analyzing" | "done" | "failed";
+export type AuthorVisibility = "private" | "public";
 
 export interface Author {
   id: string;
   name: string;
+  owner_id: string | null;
+  visibility: AuthorVisibility;
   style_md: string | null;
   style_status: StyleStatus;
   style_analyzed_at: string | null;

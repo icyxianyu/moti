@@ -13,14 +13,7 @@ pnpm-debug.log*
 .DS_Store
 
 # Runtime data
-data/db.sqlite
-data/db.sqlite-shm
-data/db.sqlite-wal
-data/*.bak
-data/authors/
-data/articles/
-data/index/
-data/style.md
+data/*
 
 # Local backup / temp
 backup/

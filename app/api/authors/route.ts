@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listAuthors, createAuthor } from "@/lib/db";
-import { ensureQueueWorkersStarted } from "@/lib/job-queue";
+import { createAuthor, listAuthorsForUser } from "@/lib/db/sqlite";
+import { ensureQueueWorkersStarted } from "@/lib/runtime/job-queue";
+import { requireUser } from "@/lib/auth/session";
 import { genId, nowISO } from "@/lib/utils";
 
 export async function GET() {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   ensureQueueWorkersStarted();
 
-  const authors = listAuthors();
+  // admin 也只看"自己的 + 公共的"，如果需要看全部私人作家，走 /api/admin/authors
+  const authors = listAuthorsForUser(user.id);
   return NextResponse.json(authors);
 }
 
 export async function POST(req: NextRequest) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   const body = await req.json();
   const name = body.name?.trim();
 
@@ -20,7 +28,21 @@ export async function POST(req: NextRequest) {
 
   const id = genId();
   const now = nowISO();
-  createAuthor(id, name, now);
+  // 普通用户新建的作家一律 private，归自己
+  createAuthor(id, name, now, user.id, "private");
 
-  return NextResponse.json({ id, name, style_md: null, style_status: "idle", style_analyzed_at: null, created_at: now, updated_at: now }, { status: 201 });
+  return NextResponse.json(
+    {
+      id,
+      name,
+      owner_id: user.id,
+      visibility: "private",
+      style_md: null,
+      style_status: "idle",
+      style_analyzed_at: null,
+      created_at: now,
+      updated_at: now,
+    },
+    { status: 201 }
+  );
 }

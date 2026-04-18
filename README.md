@@ -1,15 +1,28 @@
-# RAG Writer
+# Moti · 墨替
 
-基于 **Next.js + SQLite + Vectra + Ollama + DeepSeek** 的多作者风格写作工具。你可以为不同作者上传 `.txt` 语料，分析其写作风格，并基于检索增强生成（RAG）创作新文章。
+![Moti · 墨替 — 像某位作者一样写作](./public/og-image.png)
+
+![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=nextdotjs)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-local-000000)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+**像某位作者一样写作。**
+
+Moti 是一个本地运行的写作工具：为你欣赏的每一位作者单独建立语料库，分析出他的笔法，然后让 AI 用这位作者的口吻替你写新的文章。
+
+底层基于 **Next.js + SQLite + Vectra + Ollama**，LLM 层采用 OpenAI 兼容协议，可对接 DeepSeek / OpenAI / 通义千问 / 智谱 / Moonshot / 硅基流动 / 本地 vLLM 等任意服务。
 
 ## 功能特性
 
 - **多作者管理**：为不同作者分别维护语料、风格和生成历史
 - **本地向量索引**：使用 `vectra` 存储每位作者的检索索引，无需外部向量数据库
 - **本地 Embedding**：通过 Ollama 的 `nomic-embed-text` 生成向量
-- **DeepSeek 生成**：使用 DeepSeek 进行风格分析与文章生成
+- **任意 LLM 供应商**：通过 OpenAI 兼容协议接入，换个 `LLM_BASE_URL` 就能切换
 - **服务端风格状态**：风格分析状态持久化为 `idle / queued / analyzing / done / failed`，切页或刷新后不会丢失
-- **任务队列化处理**：风格分析与上传建索引采用“先入队、后台按并发消费”的模式，降低小机器瞬时压力
+- **任务队列化处理**：风格分析与上传建索引采用"先入队、后台按并发消费"的模式，降低小机器瞬时压力
 - **可编辑风格面板**：在创作页顶部直接查看、展开和编辑当前作者的风格指南
 - **生成历史查看**：保留每次生成结果，支持回看历史内容
 
@@ -19,7 +32,7 @@
 - **数据库**：SQLite（`better-sqlite3`）
 - **向量检索**：Vectra
 - **Embedding**：Ollama（`nomic-embed-text`）
-- **LLM**：DeepSeek API
+- **LLM**：任意 OpenAI 兼容 API（默认 DeepSeek）
 
 ## 快速开始
 
@@ -47,11 +60,28 @@ cp .env.example .env
 
 | 变量 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | **是** | - | DeepSeek API 密钥 |
+| `LLM_BASE_URL` | 否 | `https://api.deepseek.com` | OpenAI 兼容 API 的 Base URL |
+| `LLM_API_KEY` | **是** | - | LLM 服务的 API Key |
+| `LLM_MODEL` | 否 | `deepseek-chat` | 使用的模型名 |
 | `OLLAMA_BASE_URL` | 否 | `http://localhost:11434` | Ollama 服务地址 |
 | `GENERATE_CONCURRENCY` | 否 | `2` | 同时允许进行的文章生成任务数；超出后接口直接返回 `429` |
 | `ANALYZE_CONCURRENCY` | 否 | `1` | 风格分析后台消费者并发数；超出的任务会先进入队列 |
 | `INGEST_CONCURRENCY` | 否 | `1` | 上传建索引后台消费者并发数；超出的任务会先进入队列 |
+
+<details>
+<summary><b>常见 LLM 供应商配置示例</b></summary>
+
+| Provider | `LLM_BASE_URL` | `LLM_MODEL` 示例 |
+| --- | --- | --- |
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
+| Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | `Qwen/Qwen2.5-7B-Instruct` |
+| 本地 vLLM / LM Studio | `http://localhost:8000/v1` | 视部署而定 |
+
+</details>
 
 ### 并发配置建议
 
@@ -90,9 +120,10 @@ pnpm dev
 项目运行时会在 `data/` 目录下生成本地数据：
 
 - **`data/db.sqlite`**：主数据库
-  - `authors`：作者信息、风格文本、风格状态、分析完成时间
-  - `collections`：上传的原始文本及分片数量
-  - `generations`：生成历史
+  - `users`：账号（邮箱、bcrypt 密码、角色、状态、自带 LLM Key、月配额）
+  - `authors`：作者信息、风格文本、风格状态、归属者 `owner_id`、可见性 `visibility`
+  - `collections`：上传的原始文本、分片数量、`owner_id`
+  - `generations`：生成历史（按 `owner_id` 严格隔离）
   - `queue_jobs`：风格分析与上传建索引的持久化任务队列
 - **`data/authors/<authorId>/index/`**：该作者的 Vectra 向量索引
 
@@ -121,13 +152,22 @@ pnpm dev
 ```text
 .
 ├── app/                     # Next.js App Router 页面与 API
-├── components/              # 前端组件
+├── components/
+│   ├── ui/                  # shadcn/ui 原子组件
+│   ├── layout/              # 全局布局（Providers、用户菜单）
+│   └── editor/              # 主工作台（作者切换、编辑器、侧栏）
 ├── hooks/                   # 前端 hooks
-├── lib/                     # 数据库、向量检索、生成器、队列调度等核心逻辑
+├── lib/
+│   ├── auth/                # 会话与权限
+│   ├── db/                  # SQLite 与向量存储
+│   ├── ai/                  # Embedding 与 LLM 客户端
+│   ├── rag/                 # 语料入库、风格分析、文章生成
+│   ├── runtime/             # 后台队列与并发限流
+│   └── utils.ts             # 通用工具
+├── docs/                    # 文档（部署、架构等）
 ├── data/                    # 本地运行数据（已 gitignore）
 ├── Dockerfile
-├── docker-compose.yml
-└── DEPLOY.md                # Docker 部署说明
+└── docker-compose.yml
 ```
 
 ## 运行与部署注意事项
@@ -137,7 +177,7 @@ pnpm dev
 - `data/` 下的数据库、向量索引、上传语料都属于运行数据，不建议提交到 Git
 - 如果线上机器配置较小，建议优先通过 `.env` 中的并发参数控制生成、分析、建索引任务上限
 - 目前仅文章生成在超限时会直接返回 `429`；风格分析和上传建索引会先入队，再由后台按并发限制消费
-- Docker 部署请参考 `DEPLOY.md`
+- Docker 部署请参考 [`docs/deploy.md`](./docs/deploy.md)
 
 ## License
 

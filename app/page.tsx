@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { AuthorSwitcher } from "@/components/author-switcher";
-import { LeftPanel } from "@/components/left-panel";
-import { RightPanel } from "@/components/right-panel";
-import { UploadIndicator } from "@/components/upload-indicator";
+import { AuthorSwitcher } from "@/components/editor/author-switcher";
+import { LeftPanel } from "@/components/editor/left-panel";
+import { RightPanel } from "@/components/editor/right-panel";
+import { UploadIndicator } from "@/components/editor/upload-indicator";
+import { UserMenu } from "@/components/layout/user-menu";
 import { useAuthors } from "@/hooks/use-authors";
 import { useUploadManager } from "@/hooks/use-upload-manager";
 
@@ -65,7 +66,7 @@ export default function Home() {
       return (
         <div className="flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 border border-amber-500/20">
           <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-          <span className="text-amber-400">风格排队中</span>
+          <span className="text-amber-400">排队学习中</span>
         </div>
       );
     }
@@ -74,7 +75,7 @@ export default function Home() {
       return (
         <div className="flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2.5 py-1 border border-blue-500/20">
           <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-          <span className="text-blue-400">风格分析中</span>
+          <span className="text-blue-400">正在学笔法</span>
         </div>
       );
     }
@@ -83,7 +84,7 @@ export default function Home() {
       return (
         <div className="flex items-center gap-1.5 rounded-full bg-[#C8A96E]/10 px-2.5 py-1 border border-[#C8A96E]/20">
           <span className="h-1.5 w-1.5 rounded-full bg-[#C8A96E]" />
-          <span className="text-[#C8A96E]">已风格化</span>
+          <span className="text-[#C8A96E]">笔法已就位</span>
         </div>
       );
     }
@@ -91,7 +92,7 @@ export default function Home() {
     return (
       <div className="flex items-center gap-1.5 rounded-full bg-[#2A2A2E]/50 px-2.5 py-1 border border-[#2A2A2E]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#52525B]" />
-        <span className="text-[#52525B]">未风格化</span>
+        <span className="text-[#52525B]">尚未学习笔法</span>
       </div>
     );
   })();
@@ -100,7 +101,7 @@ export default function Home() {
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="flex h-14 flex-shrink-0 items-center border-b border-[#2A2A2E] bg-[#141416] px-5">
         <h1 className="font-serif text-lg font-bold tracking-wide text-[#C8A96E]">
-          风格写作
+          Moti<span className="ml-1.5 text-[#52525B] text-xs font-normal tracking-widest">墨替</span>
         </h1>
         <div className="mx-6 h-5 w-px bg-[#2A2A2E]" />
         <AuthorSwitcher
@@ -127,6 +128,10 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        <div className="ml-4 flex items-center">
+          <UserMenu />
+        </div>
       </header>
 
       <div className="flex flex-1 min-h-0 overflow-hidden">

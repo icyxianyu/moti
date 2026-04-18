@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   createQueueJob,
-  getAuthor,
   listCollections,
   type IngestCollectionJobPayload,
-} from "@/lib/db";
-import { ensureQueueWorkersStarted, scheduleQueueDrain } from "@/lib/job-queue";
+} from "@/lib/db/sqlite";
+import { ensureQueueWorkersStarted, scheduleQueueDrain } from "@/lib/runtime/job-queue";
+import { requireUser } from "@/lib/auth/session";
+import { getAuthorForRead, getAuthorForWrite } from "@/lib/auth/access";
 import { genId, nowISO } from "@/lib/utils";
 
 interface Ctx {
@@ -26,30 +27,33 @@ interface UploadError {
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   ensureQueueWorkersStarted();
 
   const { id } = await ctx.params;
-  const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  const author = getAuthorForRead(id, user);
+  if (author instanceof Response) return author;
 
+  // 语料列表跟随 author 的可见性：能读作者就能看到他的文本集（公共作家对所有人只读）
   const collections = listCollections(id);
   return NextResponse.json(collections);
 }
 
 export async function POST(req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   ensureQueueWorkersStarted();
 
   const { id } = await ctx.params;
-  const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  // 上传语料 = 写入作家，必须有写权限
+  const author = getAuthorForWrite(id, user);
+  if (author instanceof Response) return author;
 
   const formData = await req.formData();
 
-  // 支持批量上传：同时接受 "file"（单文件兼容）和 "files"（多文件）
   const files: File[] = [];
   const single = formData.get("file") as File | null;
   if (single) files.push(single);

@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   createQueueJob,
   findActiveQueueJob,
-  getAuthor,
   getCollectionTexts,
   type AnalyzeStyleJobPayload,
   updateAuthor,
-} from "@/lib/db";
-import { ensureQueueWorkersStarted, scheduleQueueDrain } from "@/lib/job-queue";
+} from "@/lib/db/sqlite";
+import { ensureQueueWorkersStarted, scheduleQueueDrain } from "@/lib/runtime/job-queue";
+import { requireUser } from "@/lib/auth/session";
+import { getAuthorForWrite } from "@/lib/auth/access";
 import { genId, nowISO } from "@/lib/utils";
 
 interface Ctx {
@@ -15,13 +16,15 @@ interface Ctx {
 }
 
 export async function POST(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   ensureQueueWorkersStarted();
 
   const { id } = await ctx.params;
-  const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  // 风格分析改写 author.style_md → 需要写权限
+  const author = getAuthorForWrite(id, user);
+  if (author instanceof Response) return author;
 
   const activeJob = findActiveQueueJob("analyze_style", id);
   if (author.style_status === "queued" || author.style_status === "analyzing" || activeJob) {
@@ -43,7 +46,6 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
   const now = nowISO();
   const job = createQueueJob<AnalyzeStyleJobPayload>(genId(), "analyze_style", id, { authorId: id }, now);
 
-  // 先把作者状态置为 queued，前端即可立即感知“已排队”。
   updateAuthor(id, { style_status: "queued" }, now);
   scheduleQueueDrain("analyze_style");
 

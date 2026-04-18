@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthor, listGenerations } from "@/lib/db";
+import { listGenerationsForUser } from "@/lib/db/sqlite";
+import { requireUser } from "@/lib/auth/session";
+import { getAuthorForRead } from "@/lib/auth/access";
 
 interface Ctx {
   params: Promise<{ id: string }>;
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
-  const { id } = await ctx.params;
-  const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  const user = await requireUser();
+  if (user instanceof Response) return user;
 
-  const generations = listGenerations(id);
+  const { id } = await ctx.params;
+  const author = getAuthorForRead(id, user);
+  if (author instanceof Response) return author;
+
+  // 历史按用户严格隔离：即使是公共作家，每个人只看自己的生成记录
+  const generations = listGenerationsForUser(id, user.id);
   return NextResponse.json(generations);
 }

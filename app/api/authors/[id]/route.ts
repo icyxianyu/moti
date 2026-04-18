@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthor, updateAuthor, deleteAuthor } from "@/lib/db";
-import type { StyleStatus } from "@/lib/db";
-import { ensureQueueWorkersStarted } from "@/lib/job-queue";
-import { removeAuthorIndex } from "@/lib/vector-store";
+import { updateAuthor, deleteAuthor, getAuthor } from "@/lib/db/sqlite";
+import type { StyleStatus } from "@/lib/db/sqlite";
+import { ensureQueueWorkersStarted } from "@/lib/runtime/job-queue";
+import { removeAuthorIndex } from "@/lib/db/vector-store";
+import { requireUser } from "@/lib/auth/session";
+import { canRead, canWrite } from "@/lib/auth/access";
 import { nowISO } from "@/lib/utils";
 
 interface Ctx {
@@ -10,22 +12,27 @@ interface Ctx {
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   ensureQueueWorkersStarted();
 
   const { id } = await ctx.params;
   const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  if (!author) return NextResponse.json({ error: "作者不存在" }, { status: 404 });
+  if (!canRead(author, user)) return NextResponse.json({ error: "无权访问该作者" }, { status: 403 });
+
   return NextResponse.json(author);
 }
 
 export async function PUT(req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   const { id } = await ctx.params;
   const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  if (!author) return NextResponse.json({ error: "作者不存在" }, { status: 404 });
+  if (!canWrite(author, user)) return NextResponse.json({ error: "无权修改该作者" }, { status: 403 });
 
   const body = await req.json();
   const fields: { name?: string; style_md?: string; style_status?: StyleStatus; style_analyzed_at?: string | null } = {};
@@ -42,11 +49,13 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
 }
 
 export async function DELETE(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   const { id } = await ctx.params;
   const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  if (!author) return NextResponse.json({ error: "作者不存在" }, { status: 404 });
+  if (!canWrite(author, user)) return NextResponse.json({ error: "无权删除该作者" }, { status: 403 });
 
   removeAuthorIndex(id);
   deleteAuthor(id);

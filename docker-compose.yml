@@ -15,7 +15,9 @@ services:
       - "80:3000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
     volumes:
       - app_data:/app/data
     depends_on:

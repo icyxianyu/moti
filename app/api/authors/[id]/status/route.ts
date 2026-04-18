@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthor, getAuthorChunkCount } from "@/lib/db";
+import { getAuthorChunkCount } from "@/lib/db/sqlite";
+import { requireUser } from "@/lib/auth/session";
+import { getAuthorForRead } from "@/lib/auth/access";
 
 interface Ctx {
   params: Promise<{ id: string }>;
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (user instanceof Response) return user;
+
   const { id } = await ctx.params;
-  const author = getAuthor(id);
-  if (!author) {
-    return NextResponse.json({ error: "作者不存在" }, { status: 404 });
-  }
+  const author = getAuthorForRead(id, user);
+  if (author instanceof Response) return author;
 
   const chunks = getAuthorChunkCount(id);
   return NextResponse.json({ ok: true, chunks });
