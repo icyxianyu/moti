@@ -14,6 +14,7 @@ export interface RightPanelState {
   historyTopic?: string;
   historyContent?: string;
   historyCreatedAt?: string;
+  historyStatus?: "completed" | "aborted" | "failed";
 }
 
 export default function Home() {
@@ -44,13 +45,14 @@ export default function Home() {
   }, []);
 
   const handleViewHistory = useCallback(
-    (id: string, topic: string, content: string, createdAt: string) => {
+    (id: string, topic: string, content: string, createdAt: string, status?: "completed" | "aborted" | "failed") => {
       setRightState({
         mode: "history",
         historyId: id,
         historyTopic: topic,
         historyContent: content,
         historyCreatedAt: createdAt,
+        historyStatus: status,
       });
     },
     []

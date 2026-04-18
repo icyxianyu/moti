@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, PenLine } from "lucide-react";
 import type { RightPanelState } from "@/app/page";
 import type { Author } from "@/hooks/use-authors";
+import { MarkdownView } from "@/components/markdown-view";
 
 interface Props {
   state: RightPanelState;
@@ -35,12 +36,11 @@ export function RightPanel({ state, currentAuthor }: Props) {
   }
 
   if (state.mode === "generating") {
-    // Stream output is managed by TabCompose via a portal or shared state
-    // This shows the streaming container
+    // 实际正文由 TabCompose 内的 StreamOutput 通过 Portal 挂到这里
     return (
-      <div className="flex flex-1 flex-col bg-[#0A0A0B] overflow-hidden" id="right-panel-stream">
-        <ScrollArea className="flex-1 p-8">
-          <div id="stream-output" className="prose prose-invert max-w-none prose-p:text-[#E4E4E7] prose-headings:text-[#C8A96E] prose-p:leading-relaxed" />
+      <div className="flex flex-1 flex-col overflow-hidden bg-[#0A0A0B]" id="right-panel-stream">
+        <ScrollArea className="flex-1">
+          <div id="stream-output" className="px-8 py-8" />
         </ScrollArea>
       </div>
     );
@@ -52,11 +52,23 @@ export function RightPanel({ state, currentAuthor }: Props) {
     };
 
     return (
-      <div className="flex flex-1 flex-col bg-[#0A0A0B] overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden bg-[#0A0A0B]">
         <div className="flex items-center justify-between border-b border-[#2A2A2E] px-8 py-3">
           <div>
-            <h2 className="text-base font-medium text-[#E4E4E7]">{state.historyTopic}</h2>
-            <p className="text-xs text-[#52525B] mt-0.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-medium text-[#E4E4E7]">{state.historyTopic}</h2>
+              {state.historyStatus === "aborted" && (
+                <span className="rounded border border-[#C8A96E]/30 bg-[#C8A96E]/10 px-2 py-0.5 text-[10px] leading-none text-[#C8A96E]">
+                  未完成
+                </span>
+              )}
+              {state.historyStatus === "failed" && (
+                <span className="rounded border border-[#EF4444]/30 bg-[#EF4444]/10 px-2 py-0.5 text-[10px] leading-none text-[#F87171]">
+                  失败
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-[#52525B]">
               {state.historyCreatedAt ? new Date(state.historyCreatedAt).toLocaleString("zh-CN") : ""}
             </p>
           </div>
@@ -70,9 +82,9 @@ export function RightPanel({ state, currentAuthor }: Props) {
             复制
           </Button>
         </div>
-        <ScrollArea className="flex-1 p-8">
-          <div className="prose prose-invert max-w-none prose-p:text-[#E4E4E7] prose-headings:text-[#C8A96E] prose-p:leading-relaxed whitespace-pre-wrap">
-            {state.historyContent}
+        <ScrollArea className="flex-1">
+          <div className="px-8 py-8">
+            <MarkdownView content={state.historyContent} />
           </div>
         </ScrollArea>
       </div>

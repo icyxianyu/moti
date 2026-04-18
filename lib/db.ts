@@ -42,6 +42,7 @@ db.exec(`
     context TEXT,
     extra_note TEXT,
     content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
     created_at TEXT NOT NULL
   );
 
@@ -75,6 +76,12 @@ try {
 }
 try {
   db.exec(`ALTER TABLE authors ADD COLUMN style_analyzed_at TEXT`);
+} catch {
+  // 列已存在，忽略
+}
+// generations 表新增 status 字段，用于标记中途中止 / 失败的生成。
+try {
+  db.exec(`ALTER TABLE generations ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'`);
 } catch {
   // 列已存在，忽略
 }
@@ -385,6 +392,8 @@ export function failQueueJob(id: string, error: string, now: string): void {
 
 // ── Generation CRUD ──────────────────────────────────────────────────────────
 
+export type GenerationStatus = "completed" | "aborted" | "failed";
+
 export interface Generation {
   id: string;
   author_id: string;
@@ -393,13 +402,14 @@ export interface Generation {
   context: string | null;
   extra_note: string | null;
   content: string;
+  status: GenerationStatus;
   created_at: string;
 }
 
 export function listGenerations(authorId: string): Omit<Generation, "content">[] {
   return db
     .prepare(
-      "SELECT id, author_id, topic, events, context, extra_note, created_at FROM generations WHERE author_id = ? ORDER BY created_at DESC"
+      "SELECT id, author_id, topic, events, context, extra_note, status, created_at FROM generations WHERE author_id = ? ORDER BY created_at DESC"
     )
     .all(authorId) as Omit<Generation, "content">[];
 }
@@ -416,11 +426,12 @@ export function createGeneration(
   context: string | null,
   extraNote: string | null,
   content: string,
-  now: string
+  now: string,
+  status: GenerationStatus = "completed"
 ): void {
   db.prepare(
-    "INSERT INTO generations (id, author_id, topic, events, context, extra_note, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(id, authorId, topic, events, context, extraNote, content, now);
+    "INSERT INTO generations (id, author_id, topic, events, context, extra_note, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(id, authorId, topic, events, context, extraNote, content, status, now);
 }
 
 export function deleteGeneration(id: string): void {

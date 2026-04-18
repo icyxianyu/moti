@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAuthor, createGeneration } from "@/lib/db";
+import type { GenerationStatus } from "@/lib/db";
 import { embed } from "@/lib/embedder";
 import { query, randomSample } from "@/lib/vector-store";
 import { generateArticle } from "@/lib/generator";
@@ -50,6 +51,31 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // 客户端如果提前断开，这里会把取消信号一路传到下游生成流程，避免后台继续白跑。
   const abortController = new AbortController();
 
+  // 在闭包中累积已经产生的 token，方便 abort / error 时把已经生成的内容落库，避免白跑。
+  let accumulated = "";
+  let persisted = false;
+  const persist = (status: GenerationStatus) => {
+    if (persisted) return;
+    // 完全没有产出（例如检索阶段就失败）就不要留下一条空记录污染历史列表。
+    if (!accumulated.trim()) return;
+    persisted = true;
+    try {
+      createGeneration(
+        genId(),
+        id,
+        topic.trim(),
+        events || null,
+        context || null,
+        extraNote || null,
+        accumulated,
+        nowISO(),
+        status
+      );
+    } catch (e) {
+      console.error("[generate] persist failed:", e);
+    }
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: string, data: Record<string, unknown>) => {
@@ -93,24 +119,27 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           context: context ?? "",
           chunks,
           styleMd: author.style_md,
-          onToken: (token) => send("token", { token }),
+          onToken: (token) => {
+            accumulated += token;
+            send("token", { token });
+          },
           signal: abortController.signal,
         });
 
-        // 保存生成历史
-        createGeneration(
-          genId(),
-          id,
-          topic.trim(),
-          events || null,
-          context || null,
-          extraNote || null,
-          fullText,
-          nowISO()
-        );
+        // 客户端断开或主动停止时，把已经生成的部分作为 aborted 状态落库，避免完全丢失。
+        if (abortController.signal.aborted) {
+          persist("aborted");
+          return;
+        }
+
+        // 正常完成：以 fullText 为准（防止最后一段 token 没走 onToken），覆盖累积值。
+        accumulated = fullText;
+        persist("completed");
 
         send("done", { message: "生成完成" });
       } catch (err) {
+        // 请求途中报错：如果已经生成了一部分，也应作为 failed 记录保留下来。
+        persist("failed");
         if (!abortController.signal.aborted) {
           send("error", { message: (err as Error).message });
         }
@@ -122,6 +151,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     },
     cancel() {
       abortController.abort();
+      // cancel() 由 runtime 在客户端断开时触发，这里兜底再写一次。
+      persist("aborted");
     },
   });
 

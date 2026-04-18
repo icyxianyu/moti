@@ -10,12 +10,24 @@ interface HistoryItem {
   events: string | null;
   context: string | null;
   extra_note: string | null;
+  status?: "completed" | "aborted" | "failed";
   created_at: string;
 }
 
+const STATUS_BADGE: Record<string, { label: string; className: string }> = {
+  aborted: {
+    label: "未完成",
+    className: "border-[#C8A96E]/30 bg-[#C8A96E]/10 text-[#C8A96E]",
+  },
+  failed: {
+    label: "失败",
+    className: "border-[#EF4444]/30 bg-[#EF4444]/10 text-[#F87171]",
+  },
+};
+
 interface Props {
   authorId: string;
-  onViewHistory: (id: string, topic: string, content: string, createdAt: string) => void;
+  onViewHistory: (id: string, topic: string, content: string, createdAt: string, status?: "completed" | "aborted" | "failed") => void;
   selectedHistoryId?: string;
 }
 
@@ -38,7 +50,7 @@ export function TabHistory({ authorId, onViewHistory, selectedHistoryId }: Props
     const res = await fetch(`/api/authors/${authorId}/history/${item.id}`);
     if (res.ok) {
       const data = await res.json();
-      onViewHistory(data.id, data.topic, data.content, data.created_at);
+      onViewHistory(data.id, data.topic, data.content, data.created_at, data.status);
     }
   };
 
@@ -79,13 +91,22 @@ export function TabHistory({ authorId, onViewHistory, selectedHistoryId }: Props
           }`}
         >
           <div className="flex-1 min-w-0">
-            <p
-              className={`truncate text-sm ${
-                selectedHistoryId === item.id ? "text-[#C8A96E]" : "text-[#E4E4E7]"
-              }`}
-            >
-              {item.topic}
-            </p>
+            <div className="flex items-center gap-1.5">
+              <p
+                className={`truncate text-sm ${
+                  selectedHistoryId === item.id ? "text-[#C8A96E]" : "text-[#E4E4E7]"
+                }`}
+              >
+                {item.topic}
+              </p>
+              {item.status && STATUS_BADGE[item.status] && (
+                <span
+                  className={`flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] leading-none ${STATUS_BADGE[item.status].className}`}
+                >
+                  {STATUS_BADGE[item.status].label}
+                </span>
+              )}
+            </div>
             <p className="mt-0.5 text-[10px] text-[#52525B]">
               {new Date(item.created_at).toLocaleString("zh-CN")}
             </p>
