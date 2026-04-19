@@ -22,42 +22,85 @@ interface Props {
  */
 export function StreamOutput({ text, statusMsg, generating, onStop, onCopy }: Props) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
-  const observerRef = useRef<MutationObserver | null>(null);
 
-  // 找到右侧挂载点（右侧面板进入 generating 模式后才会出现）
+  // 找到右侧挂载点。
+  // 注意：右侧 #stream-output 容器会在 rightState 切换（generating <-> idle/history）时
+  // 被销毁并重建，每次重建都是新 DOM 节点。因此必须在 generating 每次从 false→true 时重找，
+  // 否则第二次生成会把 Portal 挂到已经脱离 DOM 的旧容器上，造成右侧空白。
   useEffect(() => {
-    const find = () => document.getElementById("stream-output");
+    if (!generating) return;
 
-    const initial = find();
+    const initial = document.getElementById("stream-output");
     if (initial) {
       setContainer(initial);
       return;
     }
 
-    // 挂载点可能在右侧面板切换时才渲染出来，用 MutationObserver 等它出现
+    // 容器可能在 rightState 切换后才被 React 渲染出来，用 MutationObserver 等它出现
     const observer = new MutationObserver(() => {
-      const el = find();
+      const el = document.getElementById("stream-output");
       if (el) {
         setContainer(el);
         observer.disconnect();
-        observerRef.current = null;
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    observerRef.current = observer;
 
-    return () => {
-      observer.disconnect();
-      observerRef.current = null;
-    };
-  }, []);
+    return () => observer.disconnect();
+  }, [generating]);
 
-  // 自动滚到底
+  // 自动吸底：只有用户正贴着底部时才自动滚；用户上滚阅读则暂停吸底，滚回底部后恢复。
+  // 新一轮生成开始（generating false→true）时重置为开启。
+  const stickToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+
+  // 找到当前容器对应的可滚动父元素（Radix ScrollArea 或带 overflow 的容器）
+  const getScrollable = (): HTMLElement | null => {
+    if (!container) return null;
+    return (
+      (container.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null) ??
+      (container.closest("[class*='overflow']") as HTMLElement | null)
+    );
+  };
+
+  // 监听用户滚动：若往上离开底部→关闭吸底；滚回底部附近→恢复吸底
   useEffect(() => {
-    if (!container) return;
-    const scrollable = container.closest("[data-radix-scroll-area-viewport]") ?? container.closest("[class*='overflow']");
+    const scrollable = getScrollable();
+    if (!scrollable) return;
+
+    lastScrollTopRef.current = scrollable.scrollTop;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = scrollable;
+      const distanceToBottom = scrollHeight - scrollTop - clientHeight;
+      const scrollingUp = scrollTop < lastScrollTopRef.current;
+      lastScrollTopRef.current = scrollTop;
+
+      if (distanceToBottom < 32) {
+        // 贴底了：恢复自动吸底
+        stickToBottomRef.current = true;
+      } else if (scrollingUp) {
+        // 用户主动上滚：关闭自动吸底
+        stickToBottomRef.current = false;
+      }
+    };
+
+    scrollable.addEventListener("scroll", handleScroll, { passive: true });
+    return () => scrollable.removeEventListener("scroll", handleScroll);
+  }, [container]);
+
+  // 新一轮生成开始时重置为吸底
+  useEffect(() => {
+    if (generating) stickToBottomRef.current = true;
+  }, [generating]);
+
+  // 文本/状态更新时，若允许吸底就滚到底
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const scrollable = getScrollable();
     if (scrollable) {
-      (scrollable as HTMLElement).scrollTop = (scrollable as HTMLElement).scrollHeight;
+      scrollable.scrollTop = scrollable.scrollHeight;
+      lastScrollTopRef.current = scrollable.scrollTop;
     }
   }, [text, statusMsg, container]);
 

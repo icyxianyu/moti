@@ -245,8 +245,8 @@ export function TabCompose({ authorId, onGenerate, draft, onDraftChange }: Props
           placeholder="例如：Steam 独立游戏市场份额连续 3 年增长"
           value={draft.context}
           onChange={(value) => onDraftChange({ context: value })}
-          maxLength={500}
-          rows={10}
+          maxLength={1500}
+          rows={14}
         />
 
         <PromptFieldEditor
